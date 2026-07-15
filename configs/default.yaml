@@ -1,0 +1,26 @@
+# Phase 1 default config
+
+data:
+  raw_dir: data/raw
+  centerline_dir: data/processed/centerlines
+  projection_dir: data/processed/projections
+  splits_file: data/splits/case_splits.json
+
+drr:
+  n_views: 2
+  motion_rotation_deg: 10.0    # +/- range, second view only (DeepCA protocol)
+  motion_translation_mm: 8.0   # +/- range, second view only
+
+model:
+  node_dim: 4          # (x, y, z, radius)
+  cond_dim: 128
+  n_diffusion_steps: 1000
+
+train:
+  batch_size: 8
+  lr: 1.0e-4
+  epochs: 200
+  device: auto           # auto-detects cuda / mps / cpu, matches dermai's pattern
+
+eval:
+  overlap_thresholds_mm: [1.0, 2.0, 5.0]

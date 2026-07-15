@@ -1,0 +1,6 @@
+# Colab-only requirements -- Step 1.2 (DRR generation) and full-scale
+# training/fine-tuning (Steps 2.3, 3.3) need a CUDA GPU and do not
+# install/run on Apple Silicon (M4).
+-r requirements.txt
+deepdrr
+# tigre        # alternative used by the original DeepCA repo, also CUDA-only

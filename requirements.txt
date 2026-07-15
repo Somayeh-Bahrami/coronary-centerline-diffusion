@@ -1,0 +1,10 @@
+# Local (M4) requirements -- everything here runs without CUDA.
+numpy
+scipy
+nibabel
+scikit-image
+torch          # PyTorch MPS backend is used automatically on Apple Silicon
+tqdm
+matplotlib
+pandas
+pyyaml

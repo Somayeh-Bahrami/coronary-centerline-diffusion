@@ -1,0 +1,24 @@
+# data (large / regenerable -- do not commit)
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/centerlines/.gitkeep
+!data/processed/projections/.gitkeep
+
+# outputs / results
+outputs/
+checkpoints/
+*.pt
+*.pth
+*.obj
+*.pdf
+
+# python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+build/
+
+# OS
+.DS_Store
