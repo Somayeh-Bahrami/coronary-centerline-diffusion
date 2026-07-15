@@ -10,7 +10,7 @@ CS 6999, Georgia Tech. Advisor: Prof. Bo Zhu.
 
 ## Proposal
 
-See [proposal.pdf](proposal.pdf) for the full project proposal
+See [proposal.pdf](Proposal.pdf) for the full project proposal
 Step-by-step task tracking lives in [docs/work_breakdown.md](docs/work_breakdown.md).
 
 ## Setup
