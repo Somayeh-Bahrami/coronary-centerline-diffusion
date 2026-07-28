@@ -1,5 +1,4 @@
 import numpy as np
-python
 """Step 1.3 -- preprocessing: coordinate normalization, padding, and
 image intensity normalization. Runs locally on M4, no GPU needed.
 
