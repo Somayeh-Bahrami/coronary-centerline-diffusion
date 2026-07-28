@@ -25,7 +25,7 @@ require a CUDA GPU (Google Colab) — see **Model** below. For those
 steps:
 
 ```bash
-pip install -r requirements-colab.txt
+pip install -r requirements-kaggle.txt
 ```
 
 ## Dataset
