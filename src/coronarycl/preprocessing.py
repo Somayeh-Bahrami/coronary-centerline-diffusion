@@ -1,4 +1,4 @@
-
+import numpy as np
 """Step 1.3 -- preprocessing: coordinate normalization, padding, and
 image intensity normalization. Runs locally on M4, no GPU needed.
 
@@ -7,8 +7,6 @@ All normalization statistics are computed from the TRAINING split only
 train/val/test -- this avoids leaking val/test information into the
 transform.
 """
-
-import numpy as np
 
 
 def voxel_to_mm(centerline_arr: np.ndarray, voxel_spacing) -> np.ndarray:
@@ -46,7 +44,9 @@ def normalize_centerline(mm_arr: np.ndarray, norm_stats: dict) -> np.ndarray:
     coord_mean = np.array(norm_stats["coord_mean"])
     coord_std = np.array(norm_stats["coord_std"])
     out[:, :3] = (out[:, :3] - coord_mean) / coord_std
-    out[:, 3] = (out[:, 3] - norm_stats["radius_mean"]) / norm_stats["radius_std"]
+    out[:, 3] = (out[:, 3] - norm_stats["radius_mean"]) / \
+        norm_stats["radius_std"]
+    # column 4 (topology label) untouched -- categorical, not continuous
     return out
 
 
@@ -56,7 +56,8 @@ def pad_centerline(arr: np.ndarray, max_len: int):
     """
     n = arr.shape[0]
     if n > max_len:
-        raise ValueError(f"Array length {n} exceeds max_len {max_len}")
+        raise ValueError(f"Array length {n} exceeds max_len {max_len} -- "
+                         f"raise max_len instead of truncating.")
     padded = np.zeros((max_len, arr.shape[1]), dtype=np.float32)
     mask = np.zeros(max_len, dtype=bool)
     padded[:n] = arr
@@ -66,7 +67,9 @@ def pad_centerline(arr: np.ndarray, max_len: int):
 
 def compute_image_norm_stats(sample_images: np.ndarray) -> dict:
     """Percentile-clipped normalization bounds, computed from a sample
-    of training images.
+    of training images. Percentile clipping (not plain min-max) is used
+    since a small number of extreme-value outlier pixels otherwise skew
+    the scale.
     """
     p1, p99 = np.percentile(sample_images, [1, 99])
     return {"clip_min": float(p1), "clip_max": float(p99)}
