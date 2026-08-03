@@ -38,22 +38,31 @@ def extract_2d_centerline(mask_2d: np.ndarray, threshold: float = 0.05) -> np.nd
 
 
 def triangulate_point(pt_view0, pt_view1, pose0, pose1):
-    """Placeholder for standard two-view triangulation (DLT) given
-    matched 2D points and their projection matrices.
-    """
-    raise NotImplementedError("Implement DLT triangulation once poses are available.")
-
-
-def epipolar_baseline(views, poses):
-    """Match candidate centerline points across the 2 views via the
-    epipolar constraint, then triangulate to a 3D point cloud.
+    """Two-view DLT triangulation (Hartley & Zisserman, "Multiple View
+    Geometry in Computer Vision", 2004) -- given a point's 2D pixel
+    location in each of 2 views, and each view's 3x4 projection matrix,
+    solves for the 3D point that projects to both observations.
 
     Args:
-        views: list of 2 2D centerline-point arrays (from 2D vessel
-               segmentation of each projection).
-        poses: list of 2 projection matrices/poses (from Step 1.2).
+        pt_view0: (x, y) pixel coordinates in view 0.
+        pt_view1: (x, y) pixel coordinates in view 1.
+        pose0: (3, 4) projection matrix for view 0.
+        pose1: (3, 4) projection matrix for view 1.
 
     Returns:
-        (N, 3) array of triangulated 3D points.
+        (3,) array -- the triangulated 3D point.
     """
-    raise NotImplementedError("Baseline TODO — see docs/work_breakdown.md Step 2.1.")
+    x0, y0 = pt_view0
+    x1, y1 = pt_view1
+
+    A = np.array([
+        x0 * pose0[2, :] - pose0[0, :],
+        y0 * pose0[2, :] - pose0[1, :],
+        x1 * pose1[2, :] - pose1[0, :],
+        y1 * pose1[2, :] - pose1[1, :],
+    ])
+
+    _, _, Vt = np.linalg.svd(A)
+    point_h = Vt[-1]
+    point_3d = point_h[:3] / point_h[3]
+    return point_3d
