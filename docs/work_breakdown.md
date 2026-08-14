@@ -80,9 +80,32 @@ GPU (Kaggle Notebooks, GPU P100).
 **Repo:** Implemented in `src/coronarycl/models/diffusion.py`.
 
 ### 2.3 Model training [MEDIUM] [Deps: 2.2, 1.3]
-- Train on the full packaged dataset from Step 1.3, using a standard diffusion noise-prediction objective. Initial hyperparameters follow AortaDiff's reported setup (Adam, β₁=0.9/β₂=0.99, LR 1×10⁻³, batch size 16, T=1000 diffusion steps) as a starting point, not a validated recipe for this project, since AortaDiff trained on 18 cases with 3D-volume conditioning, versus 960 cases with 2D-projection conditioning here. Batch size and LR will likely need retuning for this scale.
+* Train on the full packaged dataset from Step 1.3, using a standard diffusion noise-prediction objective. Initial hyperparameters (Adam, β₁=0.9/β₂=0.99, LR 1×10⁻³, T=1000 diffusion steps) followed AortaDiff's reported setup as a starting point — not a validated recipe for this project, since AortaDiff trained on 18 cases with 3D-volume conditioning, versus 960 cases with 2D-projection conditioning here. Batch size (16) and LR were confirmed reasonable via a sanity check on a ~30-case subset before committing to full runs.
 
-**DoD:** Training curve (loss vs. epoch) saved; checkpoint that reaches Chamfer L2 distance on the val set at or below the Step 2.1 baseline.
+* Ran a systematic hyperparameter search across model capacity (hidden_dim 128 → 256 → 384) and training length/patience, since early runs showed a good, decreasing training loss did not reliably predict actual generation quality — the real signal is the full-sequence sampling result (Chamfer L2 on the val set), not the training loss alone.
+
+** DoD: Training curve (loss vs. step) saved; checkpoint that reaches Chamfer L2 distance on the val set at or below the Step 2.1 baseline.
+DoD Result: Training curve saved for all runs. Systematic scaling across 4 runs showed consistent improvement in both training loss and val-set Chamfer L2:
+
+Run  hidden_dim  Best val_loss   Val-set Chamfer L2 (mean, 20 cases)
+1    128.         0.1935            84.9mm
+2    128          0.1940            53.4mm
+3    256          0.1837            47.0mm
+4    384          0.1691            29.2mm
+
+
+
+Current best (run 4) approaches but does not yet meet the Step 2.1 baseline (~23mm on a single case; full 20-case baseline average still outstanding). Several individual cases already beat the baseline outright (19.0mm, 19.4mm, 23.9mm), suggesting the remaining gap is closing rather than reflecting a fundamental limitation. Not yet met in full; hidden_dim=512 planned as the next scaling step.
+
+Debugging notes worth preserving:
+* An early full-sequence generation attempt produced a coherent-looking but structurally wrong result (a scattered point cloud) despite good training loss. Diagnosed via two tests: (1) overfitting on a single repeated case, which succeeded (~10mm error, coherent shape), confirming the reverse-diffusion sampling code itself is implemented correctly; (2) the same model failing on unseen validation cases, confirming the real issue was undertraining/insufficient capacity relative to the 960-case generalization task, not a pipeline bug.
+* A run 4 checkpoint initially appeared to catastrophically fail (mean Chamfer L2 ~14,000mm) due to a model-loading bug — the evaluation cell instantiated the model with a mismatched hidden_dim (default 256) against 384-dim trained weights, which PyTorch's non-strict loading allowed to proceed silently instead of erroring. Diagnosed via direct inspection of raw (pre-unnormalization) model output statistics; this check is now a standard step in the evaluation pipeline, not a one-off.
+
+How I plan to do it: Full-dataset training needs a CUDA GPU for reasonable speed — used Kaggle (GPU P100), not Colab as originally planned, since Colab's free-tier GPU access proved less reliable for multi-hour
+runs. AortaDiff's reported optimizer/LR/T are used as the starting point, confirmed reasonable via an LR sanity check on a small case subset before full runs. Batch size (16) is set by GPU memory. Total training length is determined by early stopping against validation Chamfer L2 rather than a fixed iteration count, with a wall-clock safety cutoff added given Kaggle's weekly GPU quota. M4 laptop used only for local unit tests and diagnostics (e.g. per-case correlation checks) — never for full training.
+Repo: Implemented directly in Kaggle notebook cells & repo :src/coronarycl/trainer.py/train.py as originally planned
+
+
 
 **How I plan to do it:** Full-dataset training needs a CUDA GPU for reasonable speed — plan to use Kaggle. AortaDiff's reported optimizer/LR/T (Adam, β₁=0.9/β₂=0.99, LR 1×10⁻³, T=1000) are used as the starting point, since these are largely dataset-size-independent; batch size is set by GPU memory rather than copied from AortaDiff's 16 (their 18-case setup wasn't memory-constrained the way this one will be — push to the largest batch that fits on the Kaggle GPU), and total training length is determined by early stopping against the Step 3.1 validation Chamfer L2 rather than a fixed iteration count. Before committing to a full run, a quick LR sanity check (a few hundred steps on ~20-50 cases at 2-3 candidate LRs) confirms the starting LR is reasonable at this dataset scale. Local laptop used only for local unit tests on a tiny subset before committing a full run.
 
