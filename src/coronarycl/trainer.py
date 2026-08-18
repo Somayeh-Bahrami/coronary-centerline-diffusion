@@ -202,6 +202,8 @@ def train(config: dict, quick_test: bool = False):
             )
         model.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
+        if "lr_scheduler" in ckpt:                                     # <-- new
+            lr_scheduler.load_state_dict(ckpt["lr_scheduler"])
         start_step = ckpt["step"]
         best_val_loss = ckpt.get("val_loss", float("inf"))
         print(f"Resumed from step {start_step}, val_loss={best_val_loss:.4f}")
@@ -240,6 +242,7 @@ def train(config: dict, quick_test: bool = False):
                 # docstring for why this matters.
                 torch.save({
                     "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+                    "lr_scheduler": lr_scheduler.state_dict(),          # <-- new
                     "step": step, "val_loss": val_loss, "hidden_dim": hidden_dim,
                 }, latest_path)
 
