@@ -130,14 +130,40 @@ class ResBlock1D(nn.Module):
         return x + h
 
 
-class CenterlineDenoiser(nn.Module):
-    """1D-UNet denoiser over centerline nodes (x, y, z, radius),
-    conditioned on both 2D projections via cross-attention, following
-    AortaDiff's (arXiv:2507.13404) centerline-diffusion design.
+class SelfAttentionBlock1D(nn.Module):
+    """Self-attention among centerline nodes -- gives the model a global
+    receptive field, not just the local Conv1d/pooling window. Standard
+    practice in diffusion UNets (Ho et al. 2020; Dhariwal & Nichol 2021,
+    ADM) -- applied at the coarsest (bottleneck) resolution for efficiency.
     """
 
-    def __init__(self, node_dim: int = 4, hidden_dim: int = 128,
-                 time_dim: int = 128, n_heads: int = 4):
+    def __init__(self, dim, n_heads=4):
+        super().__init__()
+        self.norm = nn.LayerNorm(dim)
+        self.attn = nn.MultiheadAttention(dim, n_heads, batch_first=True)
+
+    def forward(self, x):
+        h = self.norm(x)
+        out, _ = self.attn(h, h, h)
+        return x + out
+
+
+class CenterlineDenoiser(nn.Module):
+    """1D-UNet denoiser over centerline nodes (x, y, z, radius).
+
+    v2: adds a second downsampling stage and node-to-node self-attention
+    at the bottleneck. Motivation: v1 had a receptive field of only
+    ~20-24 array positions and no node-to-node attention -- only
+    cross-attention to image tokens. On path-reordered data, this showed
+    up as val_loss improving (0.1069 vs v1's 0.1691) while Chamfer L2 got
+    much worse (69.1mm vs 29.2mm), plus moderate-but-suppressed
+    conditioning sensitivity (0.502, vs 0.68-1.34 healthy) -- consistent
+    with a model that fits local smoothness cheaply but has no way to
+    reconcile distant parts of the same tree or lock onto the
+    conditioned-on shape globally.
+    """
+
+    def __init__(self, node_dim=4, hidden_dim=384, time_dim=128, n_heads=4):
         super().__init__()
         self.node_dim = node_dim
         self.time_embed = nn.Sequential(
@@ -145,56 +171,52 @@ class CenterlineDenoiser(nn.Module):
             nn.Linear(time_dim, time_dim), nn.SiLU(
             ), nn.Linear(time_dim, time_dim),
         )
-
         self.image_encoder = ImageConditionEncoder(embed_dim=hidden_dim)
-
         self.input_proj = nn.Conv1d(node_dim, hidden_dim, 1)
 
+        # Level 1 (N)
         self.down1 = ResBlock1D(hidden_dim, time_dim)
-        self.pool = nn.Conv1d(hidden_dim, hidden_dim, 4, stride=2, padding=1)
+        self.pool1 = nn.Conv1d(hidden_dim, hidden_dim, 4, stride=2, padding=1)
+        # Level 2 (N/2)
         self.down2 = ResBlock1D(hidden_dim, time_dim)
+        self.pool2 = nn.Conv1d(hidden_dim, hidden_dim, 4, stride=2, padding=1)
+        # Level 3 / bottleneck (N/4)
+        self.down3 = ResBlock1D(hidden_dim, time_dim)
+        self.self_attn = SelfAttentionBlock1D(
+            hidden_dim, n_heads)   # node <-> node, global
+        self.cross_attn = CrossAttentionBlock(
+            hidden_dim, n_heads)   # node <-> image tokens
 
-        self.cross_attn = CrossAttentionBlock(hidden_dim, n_heads)
-
-        self.up = nn.ConvTranspose1d(
+        self.up1 = nn.ConvTranspose1d(
             hidden_dim, hidden_dim, 4, stride=2, padding=1)
-        self.up1 = ResBlock1D(hidden_dim, time_dim)
+        self.res_up1 = ResBlock1D(hidden_dim, time_dim)
+        self.up2 = nn.ConvTranspose1d(
+            hidden_dim, hidden_dim, 4, stride=2, padding=1)
+        self.res_up2 = ResBlock1D(hidden_dim, time_dim)
 
         self.output_proj = nn.Conv1d(hidden_dim, node_dim, 1)
 
-    def forward(self, noisy_nodes: torch.Tensor, t: torch.Tensor,
-                images: torch.Tensor, poses: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            noisy_nodes: (B, N, 4) noisy (x, y, z, radius) at step t.
-                N must be even (pooled/upsampled by factor 2 here).
-            t: (B,) diffusion timestep.
-            images: (B, 2, H, W) the 2 conditioning projections.
-            poses: (B, 2, 3, 4) projection matrices.
-
-        Returns:
-            predicted noise, (B, N, 4), same shape as noisy_nodes.
-        """
+    def forward(self, noisy_nodes, t, images, poses):
         t_emb = self.time_embed(t)
         cond_tokens = self.image_encoder(images, poses)
 
-        x = noisy_nodes.transpose(1, 2)
-        x = self.input_proj(x)
-
+        x = self.input_proj(noisy_nodes.transpose(1, 2))
         x = self.down1(x, t_emb)
-        x = self.pool(x)
+        x = self.pool1(x)
         x = self.down2(x, t_emb)
+        x = self.pool2(x)
+        x = self.down3(x, t_emb)
 
         x_tok = x.transpose(1, 2)
+        x_tok = self.self_attn(x_tok)
         x_tok = self.cross_attn(x_tok, cond_tokens)
         x = x_tok.transpose(1, 2)
 
-        x = self.up(x)
-        x = self.up1(x, t_emb)
-
-        out = self.output_proj(x)
-        return out.transpose(1, 2)
-
+        x = self.up1(x)
+        x = self.res_up1(x, t_emb)
+        x = self.up2(x)
+        x = self.res_up2(x, t_emb)
+        return self.output_proj(x).transpose(1, 2)
 
 def dummy_forward_backward_test():
     """Sanity check: forward + backward pass on a small dummy batch,
