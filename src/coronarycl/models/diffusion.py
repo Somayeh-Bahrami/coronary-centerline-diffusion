@@ -46,6 +46,28 @@ class SinusoidalTimestepEmbedding(nn.Module):
         return emb
 
 
+class SinusoidalPositionEmbedding(nn.Module):
+    """Standard per-token positional encoding (Vaswani et al. 2017) --
+    without this, MultiheadAttention (and to a lesser extent Conv1d at
+    long range) cannot distinguish sequence position i from position j.
+    """
+
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, n_points, device):
+        half = self.dim // 2
+        pos = torch.arange(n_points, device=device).float()
+        freqs = torch.exp(-math.log(10000) *
+                          torch.arange(half, device=device).float() / half)
+        args = pos[:, None] * freqs[None, :]
+        emb = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
+        if self.dim % 2 == 1:
+            emb = F.pad(emb, (0, 1))
+        return emb  # (n_points, hidden_dim)
+
+
 class ImageConditionEncoder(nn.Module):
     """CNN encoder for the 2 conditioning projections. Each view is
     encoded independently with a shared CNN, downsampling to a compact
@@ -173,6 +195,7 @@ class CenterlineDenoiser(nn.Module):
         )
         self.image_encoder = ImageConditionEncoder(embed_dim=hidden_dim)
         self.input_proj = nn.Conv1d(node_dim, hidden_dim, 1)
+        self.pos_embed = SinusoidalPositionEmbedding(hidden_dim)
 
         # Level 1 (N)
         self.down1 = ResBlock1D(hidden_dim, time_dim)
@@ -201,6 +224,9 @@ class CenterlineDenoiser(nn.Module):
         cond_tokens = self.image_encoder(images, poses)
 
         x = self.input_proj(noisy_nodes.transpose(1, 2))
+        pos_emb = self.pos_embed(
+            noisy_nodes.shape[1], noisy_nodes.device)  # (N, hidden_dim)
+        x = x + pos_emb.T.unsqueeze(0)  # broadcast over batch
         x = self.down1(x, t_emb)
         x = self.pool1(x)
         x = self.down2(x, t_emb)
@@ -217,6 +243,7 @@ class CenterlineDenoiser(nn.Module):
         x = self.up2(x)
         x = self.res_up2(x, t_emb)
         return self.output_proj(x).transpose(1, 2)
+
 
 def dummy_forward_backward_test():
     """Sanity check: forward + backward pass on a small dummy batch,
