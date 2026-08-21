@@ -66,28 +66,28 @@ class NoiseScheduler:
         return x_t, noise
 
 
-def compute_loss(model: CenterlineDenoiser, scheduler: NoiseScheduler, batch: dict,
-                 device: str, fixed_t: int = None) -> torch.Tensor:
-    """Masked noise-prediction loss for one batch.
-
-    fixed_t: if given, use this exact timestep for every item in the
-    batch instead of sampling randomly -- used by evaluate() below for
-    a stable, comparable validation loss across checks.
-    """
+def compute_loss(model, scheduler, batch, device, fixed_t=None, cond_drop_prob=0.0):
     centerline = batch["centerline"].to(device)
     mask = batch["centerline_mask"].to(device)
     images = batch["images"].to(device)
     poses = batch["poses"].to(device)
-
-    # exclude topology label -- held fixed, not diffused
     x0 = centerline[:, :, :4]
     B = x0.shape[0]
+    # Classifier-free guidance: during TRAINING (fixed_t is None) only, zero the
+    # conditioning for a fraction of samples so the model also learns to denoise
+    # unconditionally (Ho & Salimans, 2022). Never during eval -- eval must
+    # measure the conditional loss.
+    if fixed_t is None and cond_drop_prob > 0.0:
+        drop = torch.rand(B, device=device) < cond_drop_prob
+        if drop.any():
+            images = images.clone()
+            poses = poses.clone()
+            images[drop] = 0.0
+            poses[drop] = 0.0
     t = (torch.randint(0, scheduler.n_steps, (B,), device=device) if fixed_t is None
          else torch.full((B,), fixed_t, device=device, dtype=torch.long))
-
     x_t, true_noise = scheduler.add_noise(x0, t)
     pred_noise = model(x_t, t, images, poses)
-
     per_point_loss = F.mse_loss(
         pred_noise, true_noise, reduction="none").mean(dim=-1)
     return (per_point_loss * mask.float()).sum() / mask.float().sum()
@@ -155,6 +155,7 @@ def train(config: dict, quick_test: bool = False):
     patience = train_cfg.get("patience", 30)
     val_every = train_cfg.get("val_every", 200)
     max_hours = train_cfg.get("max_hours", 12.0)
+    cond_drop_prob = train_cfg.get("cond_drop_prob", 0.1)
     checkpoint_dir = Path(train_cfg.get("checkpoint_dir", "checkpoints"))
 
     if quick_test:
@@ -220,7 +221,8 @@ def train(config: dict, quick_test: bool = False):
 
     while step < max_steps:
         for batch in train_loader:
-            loss = compute_loss(model, scheduler, batch, device)
+            loss = compute_loss(model, scheduler, batch,
+                                device, cond_drop_prob=cond_drop_prob)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
