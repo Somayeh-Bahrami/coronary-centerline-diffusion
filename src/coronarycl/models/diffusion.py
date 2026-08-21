@@ -185,9 +185,10 @@ class CenterlineDenoiser(nn.Module):
     conditioned-on shape globally.
     """
 
-    def __init__(self, node_dim=4, hidden_dim=384, time_dim=128, n_heads=4):
+    def __init__(self, node_dim=4, hidden_dim=384, time_dim=128, n_heads=4, pos_emb_scale=0.1):
         super().__init__()
         self.node_dim = node_dim
+        self.pos_emb_scale = pos_emb_scale
         self.time_embed = nn.Sequential(
             SinusoidalTimestepEmbedding(time_dim),
             nn.Linear(time_dim, time_dim), nn.SiLU(
@@ -226,7 +227,10 @@ class CenterlineDenoiser(nn.Module):
         x = self.input_proj(noisy_nodes.transpose(1, 2))
         pos_emb = self.pos_embed(
             noisy_nodes.shape[1], noisy_nodes.device)  # (N, hidden_dim)
-        x = x + pos_emb.T.unsqueeze(0)  # broadcast over batch
+        # x = x + pos_emb.T.unsqueeze(0)  # broadcast over batch
+
+        # 13.86 -> 1.39, now a hint (||x||≈8.79), not a dominant scaffold
+        x = x + self.pos_emb_scale * pos_emb.T.unsqueeze(0)
         x = self.down1(x, t_emb)
         x = self.pool1(x)
         x = self.down2(x, t_emb)
