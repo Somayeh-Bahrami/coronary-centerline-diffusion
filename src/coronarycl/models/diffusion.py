@@ -2,19 +2,39 @@
 Develop/debug locally on M4 via PyTorch MPS backend (small batch).
 Full-scale training happens in Step 2.3 (Kaggle).
 
-Centerline-native diffusion architecture, following AortaDiff's
-(2025, arXiv:2507.13404) centerline-diffusion design: a denoiser over
-centerline nodes (x, y, z, radius), conditioned on both 2D projections
-and their projection matrices via cross-attention, so the model can
-reason about epipolar geometry between the two views.
+v3 -- conditioning overhaul aimed at the conditioning-collapse wall.
+Two changes, both adapted from DX2CT (Jeong et al., 2025, 3D CT recon
+from bi/mono-planar X-rays -- the same 2D-X-ray -> 3D conditioning
+problem we face):
 
-Topology (branch structure, column 4 of the packaged centerline array)
-is treated as fixed and given -- the denoiser only predicts noise for
-columns 0-3 (x, y, z, radius), never touching the topology label.
-Padded rows (per centerline_mask, see Step 1.3) are excluded from the
-training loss but still flow through the network -- masking is applied
-at the loss level, not inside the architecture, matching standard
-practice for padded-sequence diffusion models.
+  1. 3D Positional-Query conditioning (their "3DPQT"): instead of using
+     the node's hidden features as the cross-attention query, we use the
+     node's CURRENT 3D position as an explicit positional query that
+     attends into the X-ray(+pose) tokens. This makes the 3D->2D lookup
+     explicit and learnable, rather than hoping generic cross-attention
+     discovers epipolar geometry on its own.
+
+  2. SPADE conditioning (spatially-adaptive normalization) instead of
+     additive injection (x = x + cond). DX2CT show plainly that simple
+     concatenation/addition "did not fully utilize semantic information,
+     leading to sub-optimal results," and that SPADE is better. The
+     per-node conditioning now modulates the denoiser's normalization
+     scale/bias, which is much harder for the model to ignore than an
+     added tensor (our prior failure mode).
+
+Conditioning data unchanged: still (images, poses) already in the
+packaged .npz -- no data-prep / DRR / centerline / baseline changes.
+Geometry (poses) still flows in via the pose-embedded X-ray tokens.
+
+Topology (column 4) is fixed/given -- the denoiser predicts noise only
+for columns 0-3 (x, y, z, radius). Padded rows are excluded from the
+loss (masking at the loss level), not inside the architecture.
+
+NOTE (known follow-up): the positional query uses the *noisy* node
+position, so at high timesteps the query is near-random -- the same
+bootstrapping caveat as before. Self-conditioning (query on the
+predicted x0) is the planned next refinement; kept out of v3 to isolate
+the SPADE + 3DPQT effect first.
 """
 
 import math
@@ -25,9 +45,7 @@ import torch.nn.functional as F
 
 
 class SinusoidalTimestepEmbedding(nn.Module):
-    """Standard sinusoidal embedding for the diffusion timestep t,
-    following the original DDPM (Ho et al., 2020) formulation.
-    """
+    """Standard sinusoidal embedding for the diffusion timestep t (Ho et al., 2020)."""
 
     def __init__(self, dim: int):
         super().__init__()
@@ -47,10 +65,7 @@ class SinusoidalTimestepEmbedding(nn.Module):
 
 
 class SinusoidalPositionEmbedding(nn.Module):
-    """Standard per-token positional encoding (Vaswani et al. 2017) --
-    without this, MultiheadAttention (and to a lesser extent Conv1d at
-    long range) cannot distinguish sequence position i from position j.
-    """
+    """Per-token (sequence-order) positional encoding (Vaswani et al. 2017)."""
 
     def __init__(self, dim):
         super().__init__()
@@ -69,14 +84,12 @@ class SinusoidalPositionEmbedding(nn.Module):
 
 
 class ImageConditionEncoder(nn.Module):
-    """CNN encoder for the 2 conditioning projections. Each view is
-    encoded independently with a shared CNN, downsampling to a compact
-    spatial feature map, then flattened into a set of tokens for
-    cross-attention. Each view's projection matrix (3x4 = 12 numbers,
-    flattened) is embedded and added to that view's tokens, so the
-    model can reason about epipolar geometry between the two views --
-    this is our own conditioning-mechanism design, adapting AortaDiff's
-    ViT-on-3D-volume conditioning to our 2D-projection setup.
+    """CNN encoder for the 2 conditioning projections. Each view is encoded
+    with a shared CNN to a compact spatial map, flattened into tokens.
+    Each view's projection matrix (3x4) is embedded and added to that view's
+    tokens, so the geometry (epipolar relationship) rides along with the
+    image features -- the 3DPQT below then queries into these tokens by 3D
+    position.
     """
 
     def __init__(self, embed_dim: int = 128, pose_dim: int = 12):
@@ -99,41 +112,78 @@ class ImageConditionEncoder(nn.Module):
         )
 
     def forward(self, images: torch.Tensor, poses: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            images: (B, 2, H, W) -- the 2 conditioning projections.
-            poses: (B, 2, 3, 4) -- calibrated projection matrices.
-
-        Returns:
-            (B, T, embed_dim) conditioning tokens, T = 2 * (H/32) * (W/32).
-        """
+        """images: (B, 2, H, W), poses: (B, 2, 3, 4) -> (B, T, embed_dim), T = 2*(H/32)*(W/32)."""
         B, V, H, W = images.shape
         x = images.reshape(B * V, 1, H, W)
         feat = self.cnn(x)
         C, Hp, Wp = feat.shape[1:]
         tokens = feat.reshape(B, V, C, Hp * Wp).permute(0, 1, 3, 2)
-
         pose_flat = poses.reshape(B, V, 12)
         pose_tok = self.pose_embed(pose_flat)
         tokens = tokens + pose_tok[:, :, None, :]
-
         return tokens.reshape(B, V * Hp * Wp, C)
 
 
-class CrossAttentionBlock(nn.Module):
-    """Centerline nodes attend to image conditioning tokens."""
+class PositionalQueryConditioner(nn.Module):
+    """3DPQT-style conditioning (DX2CT, 2025). Each node's CURRENT 3D
+    position becomes an explicit positional query (NeRF-style Fourier
+    features + MLP) that cross-attends into the X-ray(+pose) tokens, and
+    returns a per-node, position-aware conditioning vector.
 
-    def __init__(self, dim: int, n_heads: int = 4):
+    This is the learnable, position-grounded replacement for generic
+    node-feature cross-attention: the model is told *where* each point is
+    in 3D and asked to fetch the matching X-ray evidence.
+    """
+
+    def __init__(self, dim, n_heads=4, n_freqs=10):
         super().__init__()
+        self.n_freqs = n_freqs
+        in_dim = 3 * (2 * n_freqs + 1)  # xyz + sin/cos at n_freqs bands
+        self.query_mlp = nn.Sequential(
+            nn.Linear(in_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
         self.norm_q = nn.LayerNorm(dim)
         self.norm_kv = nn.LayerNorm(dim)
         self.attn = nn.MultiheadAttention(dim, n_heads, batch_first=True)
+        self.register_buffer(
+            "freq_bands", (2.0 ** torch.arange(n_freqs).float()) * math.pi)
 
-    def forward(self, x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
-        q = self.norm_q(x)
-        kv = self.norm_kv(context)
-        out, _ = self.attn(q, kv, kv)
-        return x + out
+    def _encode_xyz(self, xyz):
+        # xyz: (B, N, 3) -> (B, N, 3*(2F+1))
+        feats = [xyz]
+        for f in self.freq_bands:
+            feats.append(torch.sin(xyz * f))
+            feats.append(torch.cos(xyz * f))
+        return torch.cat(feats, dim=-1)
+
+    def forward(self, node_xyz, tokens):
+        # node_xyz: (B, N, 3) ; tokens: (B, T, dim) -> (B, N, dim)
+        q = self.query_mlp(self._encode_xyz(node_xyz))
+        kv = self.norm_kv(tokens)
+        out, _ = self.attn(self.norm_q(q), kv, kv)
+        return out
+
+
+class SPADE1D(nn.Module):
+    """Spatially-Adaptive Normalization for 1D node sequences (Park et al.
+    2019; used as the diffusion conditioning method in DX2CT, 2025). The
+    per-node conditioning produces a per-node scale (gamma) and bias (beta)
+    that modulate the (affine-free) group-normalized features. Much harder
+    to ignore than additive injection -- targets our conditioning collapse.
+    """
+
+    def __init__(self, channels, cond_dim, hidden=None):
+        super().__init__()
+        hidden = hidden or channels
+        self.norm = nn.GroupNorm(8, channels, affine=False)
+        self.shared = nn.Sequential(nn.Conv1d(cond_dim, hidden, 1), nn.SiLU())
+        self.to_gamma = nn.Conv1d(hidden, channels, 1)
+        self.to_beta = nn.Conv1d(hidden, channels, 1)
+
+    def forward(self, x, cond):
+        # x: (B, C, N) ; cond: (B, cond_dim, N)
+        normalized = self.norm(x)
+        h = self.shared(cond)
+        return normalized * (1 + self.to_gamma(h)) + self.to_beta(h)
 
 
 class ResBlock1D(nn.Module):
@@ -153,11 +203,7 @@ class ResBlock1D(nn.Module):
 
 
 class SelfAttentionBlock1D(nn.Module):
-    """Self-attention among centerline nodes -- gives the model a global
-    receptive field, not just the local Conv1d/pooling window. Standard
-    practice in diffusion UNets (Ho et al. 2020; Dhariwal & Nichol 2021,
-    ADM) -- applied at the coarsest (bottleneck) resolution for efficiency.
-    """
+    """Node<->node self-attention at the bottleneck (global receptive field)."""
 
     def __init__(self, dim, n_heads=4):
         super().__init__()
@@ -173,30 +219,33 @@ class SelfAttentionBlock1D(nn.Module):
 class CenterlineDenoiser(nn.Module):
     """1D-UNet denoiser over centerline nodes (x, y, z, radius).
 
-    v2: adds a second downsampling stage and node-to-node self-attention
-    at the bottleneck. Motivation: v1 had a receptive field of only
-    ~20-24 array positions and no node-to-node attention -- only
-    cross-attention to image tokens. On path-reordered data, this showed
-    up as val_loss improving (0.1069 vs v1's 0.1691) while Chamfer L2 got
-    much worse (69.1mm vs 29.2mm), plus moderate-but-suppressed
-    conditioning sensitivity (0.502, vs 0.68-1.34 healthy) -- consistent
-    with a model that fits local smoothness cheaply but has no way to
-    reconcile distant parts of the same tree or lock onto the
-    conditioned-on shape globally.
+    v3 conditioning: per-node position-aware conditioning (PositionalQuery
+    Conditioner / 3DPQT) injected via SPADE at full resolution, at both the
+    input and the output stage of the UNet. Bottleneck self-attention kept
+    for global node<->node reasoning. Sequence positional embedding kept
+    (down-scaled) for list-order. The old additive cross-attention
+    conditioning is replaced by the SPADE path.
     """
 
-    def __init__(self, node_dim=4, hidden_dim=384, time_dim=128, n_heads=4, pos_emb_scale=0.1):
+    def __init__(self, node_dim=4, hidden_dim=384, time_dim=128, n_heads=4,
+                 pos_emb_scale=0.1):
         super().__init__()
         self.node_dim = node_dim
         self.pos_emb_scale = pos_emb_scale
+
         self.time_embed = nn.Sequential(
             SinusoidalTimestepEmbedding(time_dim),
             nn.Linear(time_dim, time_dim), nn.SiLU(
             ), nn.Linear(time_dim, time_dim),
         )
         self.image_encoder = ImageConditionEncoder(embed_dim=hidden_dim)
+        self.pos_query = PositionalQueryConditioner(
+            hidden_dim, n_heads)   # 3DPQT
         self.input_proj = nn.Conv1d(node_dim, hidden_dim, 1)
         self.pos_embed = SinusoidalPositionEmbedding(hidden_dim)
+
+        # SPADE inject (input)
+        self.spade_in = SPADE1D(hidden_dim, hidden_dim)
 
         # Level 1 (N)
         self.down1 = ResBlock1D(hidden_dim, time_dim)
@@ -206,10 +255,7 @@ class CenterlineDenoiser(nn.Module):
         self.pool2 = nn.Conv1d(hidden_dim, hidden_dim, 4, stride=2, padding=1)
         # Level 3 / bottleneck (N/4)
         self.down3 = ResBlock1D(hidden_dim, time_dim)
-        self.self_attn = SelfAttentionBlock1D(
-            hidden_dim, n_heads)   # node <-> node, global
-        self.cross_attn = CrossAttentionBlock(
-            hidden_dim, n_heads)   # node <-> image tokens
+        self.self_attn = SelfAttentionBlock1D(hidden_dim, n_heads)
 
         self.up1 = nn.ConvTranspose1d(
             hidden_dim, hidden_dim, 4, stride=2, padding=1)
@@ -218,19 +264,29 @@ class CenterlineDenoiser(nn.Module):
             hidden_dim, hidden_dim, 4, stride=2, padding=1)
         self.res_up2 = ResBlock1D(hidden_dim, time_dim)
 
+        # SPADE inject (output)
+        self.spade_out = SPADE1D(hidden_dim, hidden_dim)
         self.output_proj = nn.Conv1d(hidden_dim, node_dim, 1)
 
     def forward(self, noisy_nodes, t, images, poses):
         t_emb = self.time_embed(t)
-        cond_tokens = self.image_encoder(images, poses)
+        # (B, T, hidden)
+        tokens = self.image_encoder(images, poses)
 
-        x = self.input_proj(noisy_nodes.transpose(1, 2))
-        pos_emb = self.pos_embed(
-            noisy_nodes.shape[1], noisy_nodes.device)  # (N, hidden_dim)
-        # x = x + pos_emb.T.unsqueeze(0)  # broadcast over batch
+        # 3DPQT: per-node, position-aware conditioning from X-ray tokens
+        # (B, N, hidden)
+        cond = self.pos_query(noisy_nodes[:, :, :3], tokens)
+        # (B, hidden, N)
+        cond = cond.transpose(1, 2)
 
-        # 13.86 -> 1.39, now a hint (||x||≈8.79), not a dominant scaffold
+        x = self.input_proj(noisy_nodes.transpose(
+            1, 2))                   # (B, hidden, N)
+        pos_emb = self.pos_embed(noisy_nodes.shape[1], noisy_nodes.device)
+        # sequence-order hint
         x = x + self.pos_emb_scale * pos_emb.T.unsqueeze(0)
+        # SPADE conditioning
+        x = self.spade_in(x, cond)
+
         x = self.down1(x, t_emb)
         x = self.pool1(x)
         x = self.down2(x, t_emb)
@@ -239,27 +295,27 @@ class CenterlineDenoiser(nn.Module):
 
         x_tok = x.transpose(1, 2)
         x_tok = self.self_attn(x_tok)
-        x_tok = self.cross_attn(x_tok, cond_tokens)
         x = x_tok.transpose(1, 2)
 
         x = self.up1(x)
         x = self.res_up1(x, t_emb)
         x = self.up2(x)
         x = self.res_up2(x, t_emb)
+
+        # SPADE conditioning
+        x = self.spade_out(x, cond)
         return self.output_proj(x).transpose(1, 2)
 
 
 def dummy_forward_backward_test():
-    """Sanity check: forward + backward pass on a small dummy batch,
-    matching the REAL packaged-data shapes (see src/coronarycl/dataset.py):
+    """Sanity check: forward + backward on dummy data at real packaged shapes:
     centerline (B, 2884, 5), images (B, 2, 512, 512), poses (B, 2, 3, 4).
-    Should run on M4 CPU/MPS without CUDA. This is the DoD for Step 2.2.
+    Runs on M4 CPU/MPS without CUDA. DoD for Step 2.2.
     """
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     print(f"Running on device: {device}")
 
     B, N = 2, 2884
-
     model = CenterlineDenoiser().to(device)
 
     noisy_nodes = torch.randn(B, N, 4, device=device)
