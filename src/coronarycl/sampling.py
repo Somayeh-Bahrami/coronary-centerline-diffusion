@@ -63,12 +63,13 @@ def sample_ddim(model, sched, images, poses, n_points, device,
         else list(reversed(range(0, T, max(1, T // n_steps))))
     B = images.shape[0]
     x_t = torch.randn(B, n_points, 4, device=device)
+    x0_prev = None  # self-conditioning: previous step's predicted-x0 xyz
     for i, t_step in enumerate(steps):
         t = torch.full((B,), t_step, device=device, dtype=torch.long)
-        pred_cond = model(x_t, t, images, poses)
+        pred_cond = model(x_t, t, images, poses, x0_self=x0_prev)
         if guidance_scale != 1.0:
             pred_uncond = model(x_t, t, torch.zeros_like(
-                images), torch.zeros_like(poses))
+                images), torch.zeros_like(poses), x0_self=x0_prev)
             pred_noise = pred_uncond + guidance_scale * \
                 (pred_cond - pred_uncond)
         else:
@@ -77,6 +78,7 @@ def sample_ddim(model, sched, images, poses, n_points, device,
         x0_hat = (x_t - torch.sqrt(1 - abt) * pred_noise) / torch.sqrt(abt)
         if clip is not None:
             x0_hat = x0_hat.clamp(-clip, clip)
+        x0_prev = x0_hat[:, :, :3]  # carry predicted-x0 to next step's query
         t_prev = steps[i + 1] if i + 1 < len(steps) else -1
         ab_prev = ab[t_prev] if t_prev >= 0 else torch.tensor(
             1.0, device=device)

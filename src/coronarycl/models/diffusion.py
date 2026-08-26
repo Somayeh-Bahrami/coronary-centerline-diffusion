@@ -30,11 +30,16 @@ Topology (column 4) is fixed/given -- the denoiser predicts noise only
 for columns 0-3 (x, y, z, radius). Padded rows are excluded from the
 loss (masking at the loss level), not inside the architecture.
 
-NOTE (known follow-up): the positional query uses the *noisy* node
-position, so at high timesteps the query is near-random -- the same
-bootstrapping caveat as before. Self-conditioning (query on the
-predicted x0) is the planned next refinement; kept out of v3 to isolate
-the SPADE + 3DPQT effect first.
+v3.1 -- adds SELF-CONDITIONING. v3 (SPADE + 3DPQT) collapsed to 0.0
+conditioning sensitivity because the 3DPQT query ran on the *noisy* node
+position (near-random at high timesteps), feeding SPADE garbage; SPADE
+being invasive, the model learned to zero it out. Fix: the query now runs
+on the predicted-x0 estimate (Chen et al. 2022, self-conditioning), which
+is a meaningful position at every timestep. `forward` takes an optional
+`x0_self`; when given, 3DPQT queries on it, else on the noisy position.
+Training draws x0_self via a no-grad pass with prob 0.5 (see
+trainer.compute_loss); sampling carries it across DDIM steps (see
+sampling.sample_ddim).
 """
 
 import math
@@ -268,14 +273,18 @@ class CenterlineDenoiser(nn.Module):
         self.spade_out = SPADE1D(hidden_dim, hidden_dim)
         self.output_proj = nn.Conv1d(hidden_dim, node_dim, 1)
 
-    def forward(self, noisy_nodes, t, images, poses):
+    def forward(self, noisy_nodes, t, images, poses, x0_self=None):
         t_emb = self.time_embed(t)
         # (B, T, hidden)
         tokens = self.image_encoder(images, poses)
 
         # 3DPQT: per-node, position-aware conditioning from X-ray tokens
         # (B, N, hidden)
-        cond = self.pos_query(noisy_nodes[:, :, :3], tokens)
+        # Self-conditioning (Chen et al. 2022): query 3DPQT on the predicted-x0
+        # estimate when available (meaningful position at every timestep), else
+        # the noisy position -- this is what SPADE needs to stop collapsing.
+        query_xyz = x0_self if x0_self is not None else noisy_nodes[:, :, :3]
+        cond = self.pos_query(query_xyz, tokens)
         # (B, hidden, N)
         cond = cond.transpose(1, 2)
 

@@ -66,7 +66,7 @@ class NoiseScheduler:
         return x_t, noise
 
 
-def compute_loss(model, scheduler, batch, device, fixed_t=None, cond_drop_prob=0.0):
+def compute_loss(model, scheduler, batch, device, fixed_t=None, cond_drop_prob=0.0, self_cond_p=0.5):
     centerline = batch["centerline"].to(device)
     mask = batch["centerline_mask"].to(device)
     images = batch["images"].to(device)
@@ -87,7 +87,18 @@ def compute_loss(model, scheduler, batch, device, fixed_t=None, cond_drop_prob=0
     t = (torch.randint(0, scheduler.n_steps, (B,), device=device) if fixed_t is None
          else torch.full((B,), fixed_t, device=device, dtype=torch.long))
     x_t, true_noise = scheduler.add_noise(x0, t)
-    pred_noise = model(x_t, t, images, poses)
+    # Self-conditioning (Chen et al. 2022): with prob self_cond_p (training
+    # only), do a no-grad forward to get a predicted-x0, then feed its xyz
+    # back as the 3DPQT query for the real (grad) forward -- a meaningful
+    # query at every timestep instead of the near-random noisy position.
+    x0_self = None
+    if fixed_t is None and self_cond_p > 0.0 and torch.rand(1).item() < self_cond_p:
+        with torch.no_grad():
+            eps1 = model(x_t, t, images, poses, x0_self=None)
+            abar = scheduler.alpha_bars[t].view(-1, 1, 1)
+            x0_self = ((x_t - torch.sqrt(1 - abar) * eps1) /
+                       torch.sqrt(abar))[:, :, :3].detach()
+    pred_noise = model(x_t, t, images, poses, x0_self=x0_self)
     per_point_loss = F.mse_loss(
         pred_noise, true_noise, reduction="none").mean(dim=-1)
     return (per_point_loss * mask.float()).sum() / mask.float().sum()
