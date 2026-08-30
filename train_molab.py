@@ -1,4 +1,4 @@
-"""Stage-1 (Option B) 128^3 training for molab / RTX Pro 6000 (Blackwell).
+"""Stage-1 (Option B) 64^3 training for molab / RTX Pro 6000 (Blackwell).
 Run with:  !python train_molab.py
 Reads data from /root/data (see setup cells), repo from /root/coronary-centerline-diffusion.
 Saves best EMA checkpoint + Stage-2 Chamfer/overlap + figures to /root/out.
@@ -142,9 +142,9 @@ def dice(pred, gt, thr=0.3):
     return float((2*(p*g).sum())/(p.sum()+g.sum()+1e-6))
 
 
-# ---------- training (128^3, EMA + cosine LR) ----------
+# ---------- training (64^3, EMA + cosine LR) ----------
 RES = 64
-EPOCHS = 50
+EPOCHS = 80
 BS = 4
 ACCUM = 1          # effective batch = 4; Blackwell has room
 # 96 GB VRAM -> checkpointing off = faster
