@@ -144,7 +144,7 @@ def dice(pred, gt, thr=0.3):
 
 # ---------- training (64^3, EMA + cosine LR) ----------
 RES = 64
-EPOCHS = 80
+EPOCHS = 50
 BS = 4
 ACCUM = 1          # effective batch = 4; Blackwell has room
 # 96 GB VRAM -> checkpointing off = faster
