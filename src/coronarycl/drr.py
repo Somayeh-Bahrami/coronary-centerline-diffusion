@@ -91,7 +91,8 @@ def _build_geometry(volume_shape, voxel_spacing):
 
 def _marker_centre(proj):
     """Sub-pixel location of a projected calibration marker: the
-    intensity-weighted centroid of its blob.
+    intensity-weighted centroid of its blob. Returns None if the marker
+    is not visible (caller must skip that correspondence).
 
     NOTE (bug fixed 2026-09): this used np.unravel_index(np.argmax(proj)).
     One phantom voxel projects to a flat-topped blob (~13 px across for a
@@ -104,12 +105,13 @@ def _marker_centre(proj):
     ~3 px throughout the v1 dataset, which corrupted any geometry-aware
     conditioning that samples image features at a reprojected 3D point.
     """
-    thr = 0.5 * proj.max()
-    m = proj >= thr
-    if m.sum() == 0:
-        row, col = np.unravel_index(np.argmax(proj), proj.shape)
-        return float(col), float(row)
+    peak = proj.max()
+    if not np.isfinite(peak) or peak <= 0:
+        return None                      # marker invisible; do not fabricate a point
+    m = proj >= 0.5 * peak
     row, col = center_of_mass(proj * m)
+    if not (np.isfinite(row) and np.isfinite(col)):
+        row, col = np.unravel_index(np.argmax(proj), proj.shape)
     return float(col), float(row)
 
 
@@ -134,9 +136,14 @@ def calibrate_projection_matrix(alpha, beta, offOrigin, n_points=10,
         vol = np.zeros(cal_shape, dtype=np.float32)
         vol[tuple(idx)] = 1.0
         proj = tigre.Ax(vol, cal_geo, angles)[0]
-        col, row = _marker_centre(proj)
+        centre_px = _marker_centre(proj)
+        if centre_px is None:
+            continue
+        col, row = centre_px
         point_mm = (idx - center) * np.array(cal_spacing)
         correspondences.append((point_mm, col, row))
+    if len(correspondences) < 6:
+        raise RuntimeError("DLT calibration failed: too few visible markers")
 
     A = []
     for (X, x, y) in correspondences:
