@@ -47,6 +47,7 @@ from pathlib import Path
 
 import numpy as np
 import nibabel as nib
+from scipy.ndimage import center_of_mass
 import tigre
 
 MOTION_ROTATION_DEG = 10.0
@@ -88,6 +89,30 @@ def _build_geometry(volume_shape, voxel_spacing):
     return geo
 
 
+def _marker_centre(proj):
+    """Sub-pixel location of a projected calibration marker: the
+    intensity-weighted centroid of its blob.
+
+    NOTE (bug fixed 2026-09): this used np.unravel_index(np.argmax(proj)).
+    One phantom voxel projects to a flat-topped blob (~13 px across for a
+    2.8 mm phantom voxel at magnification 1.32 on a 0.278 mm detector), and
+    np.argmax returns the FIRST index of a plateau -- i.e. its top-left
+    corner, a systematic several-pixel bias in a consistent direction.
+    Measured on ImageCAS: DLT reprojection RMS 2.7-3.4 px with argmax vs
+    0.14-1.04 px with the centroid, and median GT-centerline projection
+    error 3.3-3.9 px vs 0.44-0.46 px. The resulting poses were wrong by
+    ~3 px throughout the v1 dataset, which corrupted any geometry-aware
+    conditioning that samples image features at a reprojected 3D point.
+    """
+    thr = 0.5 * proj.max()
+    m = proj >= thr
+    if m.sum() == 0:
+        row, col = np.unravel_index(np.argmax(proj), proj.shape)
+        return float(col), float(row)
+    row, col = center_of_mass(proj * m)
+    return float(col), float(row)
+
+
 def calibrate_projection_matrix(alpha, beta, offOrigin, n_points=10,
                                 cal_shape=(50, 50, 50), cal_spacing=(4.0, 4.0, 4.0), seed=0):
     """Empirically determine the 3x4 projection matrix P for this exact
@@ -109,7 +134,7 @@ def calibrate_projection_matrix(alpha, beta, offOrigin, n_points=10,
         vol = np.zeros(cal_shape, dtype=np.float32)
         vol[tuple(idx)] = 1.0
         proj = tigre.Ax(vol, cal_geo, angles)[0]
-        row, col = np.unravel_index(np.argmax(proj), proj.shape)
+        col, row = _marker_centre(proj)
         point_mm = (idx - center) * np.array(cal_spacing)
         correspondences.append((point_mm, col, row))
 

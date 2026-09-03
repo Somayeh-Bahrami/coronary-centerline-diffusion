@@ -9,17 +9,28 @@ transform.
 """
 
 
-def voxel_to_mm(centerline_arr: np.ndarray, voxel_spacing) -> np.ndarray:
-    """Convert (x,y,z) voxel indices to physical mm. Radius (col 3) is
-    also converted, using the mean spacing as an isotropic
-    approximation, since radius isn't a single-axis quantity. Topology
-    label (col 4) passes through unchanged.
+def voxel_to_mm(centerline_arr: np.ndarray, voxel_spacing,
+                scale_radius: bool = True) -> np.ndarray:
+    """Convert (x,y,z) voxel indices to physical mm. Topology label
+    (col 4) passes through unchanged.
+
+    LEGACY (v1 dataset only). With `scale_radius=True` the radius column
+    is multiplied by mean(voxel_spacing) -- an isotropic approximation
+    that is WRONG for anisotropic ImageCAS data (0.377 x 0.377 x 0.5 mm).
+    It exists because centerline.extract_centerline used to return radii
+    in voxels.
+
+    Since centerline.extract_centerline now takes `spacing` and returns
+    the radius directly in mm, new code must pass `scale_radius=False`
+    (or skip this function entirely) -- scaling an mm radius again would
+    double-convert it. Dataset v3 does not use this function at all.
     """
     out = centerline_arr.copy()
     out[:, 0] *= voxel_spacing[0]
     out[:, 1] *= voxel_spacing[1]
     out[:, 2] *= voxel_spacing[2]
-    out[:, 3] *= np.mean(voxel_spacing)
+    if scale_radius:
+        out[:, 3] *= np.mean(voxel_spacing)
     return out
 
 

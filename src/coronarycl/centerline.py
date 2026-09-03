@@ -127,27 +127,50 @@ def _classify_topology(skeleton: np.ndarray) -> np.ndarray:
     return labels
 
 
-def extract_centerline(volume: np.ndarray) -> np.ndarray:
+def extract_centerline(volume: np.ndarray, spacing=None) -> np.ndarray:
+    """Skeletonize `volume` and return (N, 5): x, y, z (voxel index),
+    radius, topology label -- path-ordered by `_traversal_order`.
+
+    `spacing` is the (sx, sy, sz) voxel size in mm. When given, the
+    distance transform is computed with physical sampling, so the radius
+    column is in **mm**. When omitted the radius is in **voxels**, which
+    is only correct for isotropic data -- see the note below.
+
+    NOTE (bug fixed 2026-09): earlier revisions called
+    distance_transform_edt(volume) with no `sampling`, producing radii in
+    voxel units (recognisable as exact square roots of integers) that were
+    later scaled by mean(spacing) in preprocessing.voxel_to_mm. That
+    isotropic approximation is wrong for anisotropic ImageCAS data
+    (typically 0.377 x 0.377 x 0.5 mm). Pass `spacing` to get true mm and
+    do NOT rescale afterwards.
+    """
     skeleton = skeletonize(volume)
-    dist = distance_transform_edt(volume)
+    dist = distance_transform_edt(volume, sampling=spacing)
     coords = np.argwhere(skeleton)
     radii = dist[skeleton]
     branch_labels = _classify_topology(skeleton)
 
-    order = _traversal_order(coords, radii)              # <-- new
-    coords, radii, branch_labels = (                      # <-- new
-        coords[order], radii[order], branch_labels[order])  # <-- new
+    order = _traversal_order(coords, radii)
+    coords, radii, branch_labels = (
+        coords[order], radii[order], branch_labels[order])
 
     return np.concatenate(
         [coords, radii[:, None], branch_labels[:, None]], axis=1
     )
 
 
-def extract_case(label_path: Path) -> np.ndarray:
+def extract_case(label_path: Path, use_mm_radius: bool = True) -> np.ndarray:
     """Load one ImageCAS `<case>.label.nii.gz` segmentation and extract
-    its centerline."""
-    seg = nib.load(label_path).get_fdata() > 0.5
-    return extract_centerline(seg)
+    its centerline.
+
+    With `use_mm_radius=True` (default) the radius column is in mm, taken
+    from the NIfTI header's voxel spacing. Pass False only to reproduce
+    the legacy voxel-radius output of the v1 dataset.
+    """
+    nii = nib.load(label_path)
+    seg = nii.get_fdata() > 0.5
+    spacing = nii.header.get_zooms()[:3] if use_mm_radius else None
+    return extract_centerline(seg, spacing=spacing)
 
 
 def extract_all(raw_dir: Path, out_dir: Path, case_ids=None):
