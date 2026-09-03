@@ -190,12 +190,21 @@ def split_components(mask, centerline_vox, affine):
     return out
 
 
-def crop_box(centre_vox, shape, spacing, crop_mm):
-    """FIX 3 — a crop_mm cube about the vessel centroid, clamped to the volume."""
+def crop_box(vox, shape, spacing, crop_mm):
+    """FIX 3 — a crop_mm box covering the vessel.
+
+    Centred on the centerline BOUNDING-BOX centre (not the centroid, which is
+    pulled toward dense proximal regions and under-covers distal branches), and
+    SHIFTED rather than clamped at volume edges so the box keeps its full size.
+    """
+    shape = np.array(shape)
+    bb_lo, bb_hi = vox.min(0), vox.max(0)
+    centre = (bb_lo + bb_hi) / 2.0
     half_vox = np.ceil((crop_mm / 2.0) / np.array(spacing)).astype(int)
-    lo = np.maximum(0, np.round(centre_vox).astype(int) - half_vox)
-    hi = np.minimum(np.array(shape), np.round(centre_vox).astype(int) + half_vox)
-    return lo, hi
+    size = np.minimum(2 * half_vox, shape)          # only shrink if the volume is smaller
+    lo = np.round(centre).astype(int) - size // 2
+    lo = np.clip(lo, 0, np.maximum(shape - size, 0))  # shift, don't shrink
+    return lo, lo + size
 
 
 def main():
@@ -252,8 +261,8 @@ def main():
 
         for comp in comps:
             vox = cl[comp["point_sel"], :3]
-            centre_vox = vox.mean(0)
-            lo, hi = crop_box(centre_vox, shape, spacing, args.crop_mm)
+            bbox_mm = (vox.max(0) - vox.min(0)) * spacing   # true vessel extent
+            lo, hi = crop_box(vox, shape, spacing, args.crop_mm)
             sl = tuple(slice(l, h) for l, h in zip(lo, hi))
             cmask = comp["mask"][sl].astype(np.float32)
             cshape = np.array(cmask.shape)
@@ -309,10 +318,13 @@ def main():
                              dlt_rms_px=[round(r, 2) for r in rmss],
                              pts_kept=int(in_crop.sum()), pts_total=int(len(vox)),
                              frac_in_crop=float(in_crop.mean()),
+                             vessel_bbox_mm=[round(float(b), 1) for b in bbox_mm],
                              sVoxel_mm=[round(float(s), 1) for s in sVoxel]))
+            flag = "  <-- vessel exceeds crop" if bbox_mm.max() > args.crop_mm else ""
             print(f"{sid:>12} [{split_of[cid]:>5}]: cons v1 {cons[0]:.3f} v2 {cons[1]:.3f} | "
                   f"DLT rms {rmss[0]:.2f}/{rmss[1]:.2f}px | in-crop {in_crop.mean():.3f} "
-                  f"({in_crop.sum()}/{len(vox)} pts) | vol {np.round(sVoxel,0)}", flush=True)
+                  f"({in_crop.sum()}/{len(vox)} pts) | bbox {np.round(bbox_mm,0)} "
+                  f"| vol {np.round(sVoxel,0)}{flag}", flush=True)
         times.append(time.time() - t0)
         done += 1
 
@@ -328,6 +340,10 @@ def main():
     print(f"consistency  mean {allc.mean():.3f}  min {allc.min():.3f}  max {allc.max():.3f}   [tol {args.tol_px}px]")
     print(f"DLT rms      mean {rmsall.mean():.2f}px  max {rmsall.max():.2f}px")
     print(f"centerline kept inside {args.crop_mm:.0f}mm crop: mean {fic.mean():.3f}  min {fic.min():.3f}")
+    bb = np.array([r["vessel_bbox_mm"] for r in rows])
+    n_over = int((bb.max(1) > args.crop_mm).sum())
+    print(f"vessel extent (max axis): mean {bb.max(1).mean():.1f}mm  max {bb.max(1).max():.1f}mm  "
+          f"| {n_over}/{len(rows)} exceed the {args.crop_mm:.0f}mm crop")
     if fov_warn:
         print(f"WARNING: {fov_warn} view(s) had crop extent > detector FOV — raise DSO / lower crop_mm")
     print(f"per-patient {per_patient:.1f}s  ->  ETA 1000 patients: {per_patient*1000/3600:.1f} h")
