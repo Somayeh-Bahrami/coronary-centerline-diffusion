@@ -1,43 +1,134 @@
 """Dataset v3 (Plan A) — single isotropic frame, GT regenerated after crop.
 
+BUILDER VERSION 3.2.  Every .npz carries `builder_version`; refuse to mix
+outputs from different builder versions in one directory (see --overwrite).
+
 This builder REUSES the repo's validated modules rather than duplicating them,
 so there is exactly one implementation of each piece of logic:
 
-    src.coronarycl.centerline     _build_adjacency, _traversal_order,
-                                  _classify_topology, LABEL_*  (DFS ordering,
-                                  53% -> 98.6% consecutive-pair adjacency)
+    src.coronarycl.centerline     _traversal_order, _classify_topology, LABEL_*
     src.coronarycl.preprocessing  pad_centerline, compute_centerline_norm_stats
     src.coronarycl.splits         make_case_level_split, write_splits
-
-Only the v3-specific steps live here: vessel-mask projection, DeepCA geometry,
-centroid DLT, RCA/LCA split, crop, isotropic resampling, and the QC gate.
 
 Order of operations (each step feeds the next, one coordinate frame throughout):
 
     ImageCAS <id>.label.nii.gz
       -> RCA / LCA split (3D connected components, side from NIfTI affine)
       -> 96 mm crop, bbox-centred, SHIFTED (not shrunk) at volume edges
-      -> resample ONCE to isotropic (default 0.35 mm)      [pure upsampling]
+      -> resample ONCE to isotropic (iso <= native min spacing: upsampling only)
       -> skeletonize  +  distance_transform_edt(sampling=iso)  -> radius in mm
       -> topology labels  +  DFS traversal ordering  (centerline.py)
       -> centerline mm relative to the isotropic volume centre = isocentre
-      -> TIGRE projection of THAT SAME isotropic volume (DeepCA geometry)
-      -> centroid-DLT pose calibration
+      -> TIGRE projection of THAT SAME isotropic volume (DeepCA RENDER geometry)
+      -> centroid-DLT pose calibration, twice: render pose and scanner pose
       -> hard gate, pad to fixed length (preprocessing.py), save
 
-The same isotropic volume is used for BOTH the projections and the
-skeletonization, so mask / centerline / radius / projection / pose share one
-grid, one centre and one motion instance by construction.
+===========================================================================
+v3.1 CORRECTIONS (verified against DeepCA data_simulation.py @ c01ab96)
 
-Normalisation stats are computed in a second pass over TRAIN patients only and
-written next to the split; samples store RAW mm (the transform is applied at
-load time).
+P1-a  Motion translation is 2-AXIS by default (tz == 0), per DeepCA L191.
+      --motion_3d is an explicitly NON-DeepCA option.
+P1-b  P_scanner / P_render separated.  DeepCA renders view 2 with motion
+      (L191/196) then reconstructs with NOMINAL geometry (L211/212: offOrigin
+      reset to 0, angles reset to un-perturbed primary/secondary).  DSD/DSO are
+      NOT reset there -- they are C-arm readouts, not patient motion.
+          poses         -> nominal scanner geometry   (MODEL INPUT)
+          poses_render  -> motion-carrying geometry   (VALIDATION ONLY)
+      *** Projecting the GT through poses[1] no longer lands on images[1].
+          That mismatch IS the task. ***
+P1-c  mask_kept is a rejection criterion (--min_mask_kept).
+P1-d  LCA/RCA named only when identifiable (exactly 2 components, separated on
+      the affine L-R axis).  Merged / >2-component patients are skipped.
+P2-e  DLT RMS measured on HELD-OUT markers.
+P2-f  FOV gate is per-point, not a cube-side heuristic.
+P2-g  Detector spacing corrected to DeepCA's [0.2779, 0.2789].
+
+v3.2 CORRECTIONS (this file)
+
+P1-h  *** THE 0.35 mm "PURE UPSAMPLING" CLAIM WAS FALSE. ***  508 of the 1000
+      local ImageCAS cases have native in-plane spacing below 0.35 mm (min
+      0.289 mm), so `zoom(order=0)` was DOWNsampling those cases and could
+      break thin distal branches, altering topology and radius.
+      Fixes, all three:
+        * --iso auto (NEW DEFAULT) = min(ISO_MM_CAP, native spacing.min()) per
+          case, so factors >= 1 on every axis and the claim is true by
+          construction.  --iso 0.35 restores a fixed grid (not recommended).
+        * --max_iso_voxels REJECTS an unaffordable grid instead of quietly
+          coarsening it (an early draft clamped iso at a floor, which silently
+          voided the guarantee again for sub-floor cases).
+        * Topology is now GATED, not merely reported: the vessel mask is one
+          connected component by construction, so its skeleton must be too.
+          n_skel_components != 1 => REJECT.  The pre-resample component count
+          is recorded alongside it, so a break can be attributed to the
+          resample rather than the crop.
+
+P1-i  NaN COULD EVADE DLT REJECTION.  Python's max() is order-dependent with
+      NaN: max([0.5, nan]) == 0.5, so a NaN held-out RMS (fewer than 3 visible
+      validation markers) was hidden whenever a finite value came first.  The
+      bug was present at BOTH aggregation levels (per-view max(fr, fs) and the
+      per-sample gate).  All RMS values now go into one flat array and the gate
+      requires np.isfinite(...).all() before comparing the max.
+
+P1-j  STALE OUTPUT COULD CONTAMINATE A RUN.  The builder reused ./dataset_v3
+      with exist_ok=True and never checked it was empty, so a sample written by
+      an older builder -- with motion baked into `poses` -- could survive a run
+      that skipped or rejected it.  Now: default out_dir is ./dataset_v3_1, the
+      builder REFUSES to start if .npz files are present (--overwrite clears
+      them), and every sample is stamped with builder_version so a loader can
+      assert on it.
+
+P2-k  GATE FAILURE NOW EXITS NONZERO (SystemExit(1)), so a failed build cannot
+      be followed by training in the same shell/notebook cell.
+
+P2-l  geo.accuracy IS NOW SET EXPLICITLY (default 0.5) instead of inherited
+      from TIGRE's default.
+      *** DELIBERATE DIVERGENCE FROM DeepCA. ***  DeepCA sets accuracy = 1
+      (data_simulation.py L137); TIGRE's default is 0.5
+      (utilities/geometry_default.py L29/51/73).  The units are vx/sample, so
+      accuracy=1 samples the ray every 1 voxel and accuracy=0.5 every half
+      voxel -- DeepCA's value is COARSER, not finer.  Copying it here would be
+      a fidelity win and an accuracy loss: our voxels are ~0.3 mm against
+      DeepCA's ~0.75 mm, so a 1-voxel ray step is far likelier to step over a
+      1-2 voxel distal branch and punch holes in a binary silhouette that is
+      thresholded at > 1e-6.  We keep 0.5 and record the divergence.
+      --tigre_accuracy 1.0 reproduces DeepCA exactly if you want that arm.
+
+P2-m  SILHOUETTE CLIPPING IS NOW CHECKED.  The per-point FOV gate (P2-f) covers
+      the centerline but not the vessel's thickness: the rendered mask could be
+      clipped at the detector border while every centerline point stayed
+      inside, corrupting the image conditioning but not the GT.  A projection
+      whose silhouette touches any detector border row/column is now rejected.
+
+P2-n  --min_motion_effect NO LONGER REJECTS BY DEFAULT.  Rejecting samples
+      whose motion happened to be small removed the low-motion tail of a
+      distribution DeepCA samples uniformly over [-8,8] mm / [-10,10] deg, and
+      that is a dataset bias introduced by the QC rather than a defect being
+      caught.  It is now a DIAGNOSTIC, with two honest guards kept:
+        * per-sample: rejected only when the SAMPLED motion was large
+          (--motion_probe_trans_mm / --motion_probe_rot_deg) yet produced no
+          measurable effect -- that combination is a wiring bug, not a small
+          draw.
+        * dataset-level: the gate fails if the mean effect is ~zero or the
+          effect does not correlate with sampled motion magnitude.
+
+NOT FIXED HERE (needs a decision or another file):
+  * RAO/LAO labels are still not emitted, ON PURPOSE.  Mapping TIGRE's alpha to
+    clinical RAO/LAO requires knowing TIGRE's rotation convention relative to
+    patient anatomy -- exactly the thing this repo could not derive analytically
+    (two attempts, 20+ px error) and works around with empirical DLT.  Emitting
+    a guessed label would be worse than emitting none.  Raw primary/secondary
+    angles are recorded; derive the clinical label only after establishing the
+    convention against a known-orientation phantom.
+  * src/coronarycl/dataset.py cannot read v3.2 output (different filenames, no
+    vessel_masks, raw-mm unnormalised centerlines, and `poses` with new
+    semantics).  See dataset_v3_1.py for a v3.2-compatible Dataset.
+===========================================================================
 
 Requires CUDA (TIGRE). Run from the repository root so `src.coronarycl`
 imports resolve.
 
 Usage:
-    python build_dataset_v3.py --raw_dir DIR --out_dir ./dataset_v3 --n 10
+    python build_dataset_v3.py --raw_dir DIR --out_dir ./dataset_v3_1 --n 20
 """
 import argparse, glob, json, os, sys, time
 from pathlib import Path
@@ -61,54 +152,72 @@ from src.coronarycl.splits import (              # noqa: E402
     make_case_level_split, write_splits,
 )
 
-# ---------------- DeepCA geometry (Wang et al., WACV 2025, Table 3) ----------------
-DET_N = 512
-DET_SPACING_RANGE = (0.2769, 0.2789)
-V1_DSD_RANGE, V2_DSD_RANGE = (970.0, 1010.0), (1050.0, 1070.0)
-V1_DSO_RANGE, V2_DSO_JITTER = (745.0, 785.0), 3.0
-V1_PRIMARY, V1_SECONDARY = (18.0, 42.0), (-8.0, 8.0)
-V2_PRIMARY, V2_SECONDARY = (-8.0, 8.0), (18.0, 42.0)
-MOTION_ROT_DEG, MOTION_TRANS_MM = 10.0, 8.0
-CROP_MM_DEFAULT, ISO_MM_DEFAULT = 96.0, 0.35
+BUILDER_VERSION = "3.2"
+
+# ---------------- DeepCA geometry (Wang et al., WACV 2025; data_simulation.py @ c01ab96) ----
+DET_N = 512                                     # L146
+DET_SPACING_RANGE = (0.2779, 0.2789)            # L147: 0.2779 + 0.001*rand
+V1_DSD_RANGE, V2_DSD_RANGE = (970.0, 1010.0), (1050.0, 1070.0)   # L157, L190
+V1_DSO_RANGE, V2_DSO_JITTER = (745.0, 785.0), 3.0                # L158, L190
+V1_PRIMARY, V1_SECONDARY = (18.0, 42.0), (-8.0, 8.0)             # L161-162
+V2_PRIMARY, V2_SECONDARY = (-8.0, 8.0), (18.0, 42.0)             # L193-194
+MOTION_ROT_DEG, MOTION_TRANS_MM = 10.0, 8.0                      # L191, L196
+DEEPCA_ACCURACY = 1.0                                            # L137 (we use 0.5, see P2-l)
+CROP_MM_DEFAULT = 96.0
+ISO_MM_CAP = 0.35            # never coarser than this; --iso auto goes finer as needed
 MIN_COMPONENT_FRAC = 0.05
 _CONN26 = np.ones((3, 3, 3), int)
 
 
 # ======================= geometry / projection =======================
-def sample_geometry(rng, motion_2d=False):
-    """One DeepCA-style two-view acquisition; view 2 also carries the rigid
-    motion perturbation (DeepCA protocol: +/-10 deg rotation, +/-8 mm
-    translation).
+def sample_geometry(rng, motion_3d=False):
+    """One DeepCA-style two-view acquisition, returned as TWO geometries.
 
-    `motion_2d=True` zeroes the out-of-plane translation component. DeepCA's
-    paper and Table 3 state only "translations +/-8 mm" without a per-axis
-    breakdown, and their projections_simulation.py could not be inspected
-    here, so whether their translation is 2- or 3-axis is UNVERIFIED. The
-    default keeps 3-axis translation; set --motion_2d if you confirm from
-    their source that the out-of-plane component is zero.
+    views_render   what TIGRE projects; view 2 carries the rigid motion.
+    views_scanner  nominal C-arm geometry (same det spacing, same DSD/DSO,
+                   motion removed) -- this is what the model is given.
+
+    DeepCA fidelity: view 1 zero motion (L159/164); view 2 render offOrigin
+    [tx,ty,0] (L191) and angles [pri+r1, sec+r2, 0] (L196); view 2 nominal
+    offOrigin [0,0,0] (L211) and angles [pri, sec, 0] (L212), DSD/DSO kept.
     """
     det_sp = rng.uniform(*DET_SPACING_RANGE)
     dso1 = rng.uniform(*V1_DSO_RANGE)
-    # Only the two rotation components that are actually applied (primary /
-    # secondary angulation) are sampled -- an earlier version drew a third
-    # and recorded it in the metadata without ever using it.
+
     rot = rng.uniform(-MOTION_ROT_DEG, MOTION_ROT_DEG, size=2)
-    trans = rng.uniform(-MOTION_TRANS_MM, MOTION_TRANS_MM, size=3)
-    if motion_2d:
-        trans[2] = 0.0
+    trans = np.zeros(3, np.float64)
+    trans[0] = rng.uniform(-MOTION_TRANS_MM, MOTION_TRANS_MM)
+    trans[1] = rng.uniform(-MOTION_TRANS_MM, MOTION_TRANS_MM)
+    if motion_3d:                       # NON-DeepCA
+        trans[2] = rng.uniform(-MOTION_TRANS_MM, MOTION_TRANS_MM)
+
     v1 = dict(alpha=float(rng.uniform(*V1_PRIMARY)), beta=float(rng.uniform(*V1_SECONDARY)),
               DSD=float(rng.uniform(*V1_DSD_RANGE)), DSO=float(dso1),
               det_spacing=float(det_sp), offOrigin=np.zeros(3, np.float32))
-    v2 = dict(alpha=float(rng.uniform(*V2_PRIMARY) + rot[0]),
-              beta=float(rng.uniform(*V2_SECONDARY) + rot[1]),
-              DSD=float(rng.uniform(*V2_DSD_RANGE)),
-              DSO=float(dso1 + rng.uniform(-V2_DSO_JITTER, V2_DSO_JITTER)),
-              det_spacing=float(det_sp), offOrigin=np.array(trans, np.float32))
-    return [v1, v2], dict(motion_rot_deg=rot.tolist(),        # [primary, secondary]
-                          motion_trans_mm=trans.tolist(), motion_2d=bool(motion_2d))
+
+    a_nom = float(rng.uniform(*V2_PRIMARY))
+    b_nom = float(rng.uniform(*V2_SECONDARY))
+    dsd2 = float(rng.uniform(*V2_DSD_RANGE))
+    dso2 = float(dso1 + rng.uniform(-V2_DSO_JITTER, V2_DSO_JITTER))
+
+    v2_render = dict(alpha=a_nom + float(rot[0]), beta=b_nom + float(rot[1]),
+                     DSD=dsd2, DSO=dso2, det_spacing=float(det_sp),
+                     offOrigin=np.array(trans, np.float32))
+    v2_scanner = dict(alpha=a_nom, beta=b_nom, DSD=dsd2, DSO=dso2,
+                      det_spacing=float(det_sp), offOrigin=np.zeros(3, np.float32))
+
+    meta = dict(motion_rot_deg=rot.tolist(), motion_trans_mm=trans.tolist(),
+                motion_3d=bool(motion_3d),
+                motion_trans_norm_mm=float(np.linalg.norm(trans)),
+                motion_rot_norm_deg=float(np.linalg.norm(rot)),
+                v2_nominal_alpha=a_nom, v2_nominal_beta=b_nom,
+                # Raw angles only. Clinical RAO/LAO is deliberately NOT derived
+                # here -- see the module docstring.
+                deepca_ref="data_simulation.py@c01ab96 L159/164 L191/196 L211/212")
+    return [v1, v2_render], [dict(v1), v2_scanner], meta
 
 
-def build_geo(shape, spacing, view):
+def build_geo(shape, spacing, view, accuracy=0.5):
     geo = tigre.geometry(mode="cone", nVoxel=np.array(shape), default=True)
     geo.dVoxel = np.array(spacing, dtype=np.float32)
     geo.sVoxel = geo.dVoxel * geo.nVoxel
@@ -117,6 +226,9 @@ def build_geo(shape, spacing, view):
     geo.dDetector = np.array([view["det_spacing"]] * 2, dtype=np.float32)
     geo.sDetector = geo.dDetector * geo.nDetector
     geo.offOrigin = np.array(view["offOrigin"], dtype=np.float32)
+    # P2-l: set explicitly rather than inheriting TIGRE's default. Units are
+    # vx/sample, so SMALLER is finer. DeepCA uses 1.0; we default to 0.5.
+    geo.accuracy = float(accuracy)
     return geo
 
 
@@ -124,9 +236,9 @@ def _blob_centre(proj):
     """Sub-pixel marker location: intensity-weighted centroid of the blob.
     Returns None when the marker is not visible (caller skips it).
 
-    np.argmax returns the FIRST index of a flat-topped plateau -- its
-    top-left corner -- a systematic multi-pixel bias. That was the v1 pose
-    error (DLT RMS 2.7-3.4 px vs 0.14-1.04 px with the centroid).
+    np.argmax returns the FIRST index of a flat-topped plateau -- its top-left
+    corner -- a systematic multi-pixel bias.  That was the v1 pose error
+    (DLT RMS 2.7-3.4 px vs 0.14-1.04 px with the centroid).
     """
     peak = proj.max()
     if not np.isfinite(peak) or peak <= 0:
@@ -145,80 +257,149 @@ def project_points(P, pts_mm):
     return uvw[:, :2] / uvw[:, 2:3]
 
 
-def calibrate_P(shape, spacing, view, n_points=20, cal_n=64, seed=0):
-    """DLT against TIGRE's real Ax(). The calibration phantom has the SAME
-    physical extent (sVoxel) as the volume being projected, so P transfers
-    exactly; only the sampling resolution is coarser."""
+def calibrate_P(shape, spacing, view, n_fit=20, n_val=8, cal_n=64, seed=0, accuracy=0.5):
+    """DLT against TIGRE's real Ax(), validated on HELD-OUT markers.
+
+    The calibration phantom has the SAME physical extent (sVoxel) as the volume
+    being projected, so P transfers exactly; only the sampling is coarser.
+
+    P is fitted on `n_fit` markers; `n_val` further markers are drawn AFTER the
+    fit (de-duplicated against it) and projected through the fitted P, so
+    rms_val is a generalisation error rather than a training residual.
+
+    rms_val is NaN when fewer than 3 validation markers were visible.  Callers
+    MUST treat NaN as a failure -- see P1-i; do not funnel it through max().
+    """
     sVoxel = np.array(shape) * np.array(spacing)
     cal_shape = (cal_n, cal_n, cal_n)
     cal_spacing = sVoxel / cal_n
-    geo = build_geo(cal_shape, cal_spacing, view)
+    geo = build_geo(cal_shape, cal_spacing, view, accuracy=accuracy)
     angles = np.array([[np.radians(view["alpha"]), np.radians(view["beta"]), 0.0]], np.float32)
 
     rng = np.random.default_rng(seed)
     centre = np.array(cal_shape) / 2.0
-    corr = []
-    for _ in range(n_points):
-        idx = rng.integers(6, np.array(cal_shape) - 6)
-        vol = np.zeros(cal_shape, dtype=np.float32)
-        vol[tuple(idx)] = 1.0
-        centre_px = _blob_centre(tigre.Ax(vol, geo, angles)[0])
-        if centre_px is None:
-            continue
-        x, y = centre_px
-        corr.append(((idx + 0.5 - centre) * cal_spacing, x, y))
-    if len(corr) < 6:
-        raise RuntimeError("DLT calibration failed: too few visible markers")
+    used = set()
+
+    def _draw(n):
+        out = []
+        for _ in range(n):
+            for _try in range(5):
+                idx = rng.integers(6, np.array(cal_shape) - 6)
+                key = tuple(int(v) for v in idx)
+                if key not in used:
+                    break
+            used.add(key)
+            vol = np.zeros(cal_shape, dtype=np.float32)
+            vol[tuple(idx)] = 1.0
+            centre_px = _blob_centre(tigre.Ax(vol, geo, angles)[0])
+            if centre_px is None:
+                continue                      # marker not visible -> skip it
+            x, y = centre_px
+            out.append(((idx + 0.5 - centre) * cal_spacing, x, y))
+        return out
+
+    fit = _draw(n_fit)
+    if len(fit) < 6:
+        raise RuntimeError("DLT calibration failed: too few visible fit markers")
 
     A = []
-    for (X, x, y) in corr:
+    for (X, x, y) in fit:
         Xh = np.array([*X, 1.0])
         A.append(np.concatenate([Xh, np.zeros(4), -x * Xh]))
         A.append(np.concatenate([np.zeros(4), Xh, -y * Xh]))
     _, _, Vt = np.linalg.svd(np.array(A))
     P = Vt[-1].reshape(3, 4)
     P = (P / P[-1, -1]).astype(np.float64)
-    pts = np.array([c[0] for c in corr])
-    obs = np.array([[c[1], c[2]] for c in corr])
-    rms = float(np.sqrt(((project_points(P, pts) - obs) ** 2).sum(1).mean()))
-    return P, rms
+
+    def _rms(corr):
+        if len(corr) < 3:
+            return float("nan")
+        pts = np.array([c[0] for c in corr])
+        obs = np.array([[c[1], c[2]] for c in corr])
+        return float(np.sqrt(((project_points(P, pts) - obs) ** 2).sum(1).mean()))
+
+    return P, _rms(fit), _rms(_draw(n_val))
+
+
+def on_detector_fraction(uv):
+    """Fraction of projected points inside the physical detector (P2-f)."""
+    col, row = uv[:, 0], uv[:, 1]
+    return float(((col >= 0) & (col < DET_N) & (row >= 0) & (row < DET_N)).mean())
+
+
+def silhouette_clipped(binary):
+    """P2-m: True when the rendered vessel touches a detector border, i.e. the
+    silhouette is cut off even if every centerline point is on-detector."""
+    return bool(binary[0].any() or binary[-1].any()
+                or binary[:, 0].any() or binary[:, -1].any())
 
 
 # ======================= vessel split / crop / resample =======================
-def side_labels(affine, centroids):
-    """Name components by anatomical side from the NIfTI axis codes rather
-    than assuming an array orientation; None -> fall back to size rank."""
+def side_labels(affine, centroids, spacing):
+    """Name exactly two components by anatomical side from the NIfTI axis codes.
+    Returns (names, separation_mm), or (None, nan) if the affine has no L/R axis.
+    Never called with one component -- side is not identifiable from one centroid.
+    """
     try:
         codes = nib.aff2axcodes(affine)
     except Exception:
-        return None
+        return None, float("nan")
     ax = next((i for i, c in enumerate(codes) if c in ("L", "R")), None)
-    if ax is None:
-        return None
+    if ax is None or len(centroids) != 2:
+        return None, float("nan")
     vals = [c[ax] for c in centroids]
+    sep_mm = abs(vals[0] - vals[1]) * float(spacing[ax])
     order = np.argsort(vals)
+    # codes[ax]=="L": increasing index -> more Left, so LARGEST value is LCA.
+    # codes[ax]=="R": increasing index -> more Right, so SMALLEST value is LCA.
     ranked = order[::-1] if codes[ax] == "L" else order
     names = [None] * len(vals)
     for rank, ci in enumerate(ranked):
         names[ci] = "LCA" if rank == 0 else "RCA"
-    return names
+    return names, sep_mm
 
 
-def split_components(mask, affine):
-    """One sample per coronary system (3D connected component)."""
+def split_components(mask, affine, spacing, single_component="skip",
+                     extra_components="skip", min_lr_sep_mm=10.0):
+    """One sample per coronary system.  Returns (components, skip_reason).
+
+    2 significant components -> LCA/RCA by affine L-R axis, if separated
+    1 component              -> merged tree; side not identifiable -> skip
+    >2 components            -> keeping the 2 largest discards anatomy -> skip
+    """
     lab, n = cc_label(mask, structure=_CONN26)
     if n == 0:
-        return []
+        return [], "no components"
     sizes = np.bincount(lab.ravel())
     sizes[0] = 0
-    keep = [i for i in range(1, n + 1) if sizes[i] >= MIN_COMPONENT_FRAC * mask.sum()]
-    keep = sorted(keep, key=lambda i: -sizes[i])[:2]
-    if not keep:
-        return []
+    sig = [i for i in range(1, n + 1) if sizes[i] >= MIN_COMPONENT_FRAC * mask.sum()]
+    sig = sorted(sig, key=lambda i: -sizes[i])
+    if not sig:
+        return [], "no significant components"
+
+    if len(sig) == 1:
+        if single_component != "keep":
+            return [], "1 significant component (LCA/RCA merged); side not identifiable"
+        i = sig[0]
+        return [dict(name="MERGED", mask=(lab == i), n_vox=int(sizes[i]),
+                     lr_sep_mm=float("nan"))], None
+
+    if len(sig) > 2:
+        frac3 = sizes[sig[2]] / mask.sum()
+        if extra_components != "largest2":
+            return [], (f"{len(sig)} significant components "
+                        f"(3rd = {frac3:.1%} of mask) -- would discard anatomy")
+        sig = sig[:2]
+
+    keep = sig[:2]
     centroids = [np.array(center_of_mass(lab == i)) for i in keep]
-    names = side_labels(affine, centroids)
-    return [dict(name=(names[j] if names else f"c{j}"), mask=(lab == i),
-                 n_vox=int(sizes[i])) for j, i in enumerate(keep)]
+    names, sep_mm = side_labels(affine, centroids, spacing)
+    if names is None:
+        return [], "no L/R axis in NIfTI affine; cannot name LCA/RCA"
+    if not np.isfinite(sep_mm) or sep_mm < min_lr_sep_mm:
+        return [], f"L-R centroid separation {sep_mm:.1f} mm < {min_lr_sep_mm} mm (ambiguous side)"
+    return [dict(name=names[j], mask=(lab == i), n_vox=int(sizes[i]),
+                 lr_sep_mm=float(sep_mm)) for j, i in enumerate(keep)], None
 
 
 def crop_box(mask, shape, spacing, crop_mm):
@@ -233,23 +414,46 @@ def crop_box(mask, shape, spacing, crop_mm):
     return lo, lo + size
 
 
+def resolve_iso(spacing, iso_arg, iso_cap=ISO_MM_CAP):
+    """P1-h: pick the isotropic grid for ONE case.
+
+    'auto' -> min(iso_cap, native spacing.min()), with NO lower clamp, so zoom
+    factors are >= 1 on every axis and `to_isotropic` really is pure upsampling.
+
+    An earlier draft clamped this at a 0.25 mm floor, which silently voided the
+    guarantee for any case finer than the floor (native [0.20,0.20,0.25] still
+    gave factors [0.8,0.8,1.0]).  Grid size is bounded by
+    rejecting oversized volumes (--max_iso_voxels) instead of by quietly
+    degrading them: a build that cannot afford the grid should say so, not
+    corrupt the mask.
+
+    A fixed --iso value is honoured as given and may downsample; to_isotropic()
+    reports which axes, and the QC gate fails on any of them.
+    """
+    if isinstance(iso_arg, str) and iso_arg.lower() == "auto":
+        return float(min(iso_cap, float(np.min(spacing))))
+    return float(iso_arg)
+
+
 def to_isotropic(mask_crop, spacing, iso):
-    """Nearest-neighbour resample to an isotropic grid. With iso <= min(spacing)
-    this is pure upsampling, so no thin vessel can be lost."""
+    """Nearest-neighbour resample to an isotropic grid.
+
+    Returns (mask, downsampled_axes).  When iso <= min(spacing) every zoom
+    factor is >= 1 and this is pure upsampling, so no thin vessel can be lost.
+    That precondition is NOT automatic -- 508/1000 ImageCAS cases have in-plane
+    spacing below 0.35 mm -- so the violated axes are returned and the caller
+    gates on the resulting topology (P1-h).
+    """
     factors = np.array(spacing, float) / float(iso)
+    down = [int(a) for a in np.where(factors < 1.0)[0]]
     out = zoom(mask_crop.astype(np.uint8), factors, order=0,
                grid_mode=True, mode="nearest")
-    return out.astype(bool)
+    return out.astype(bool), down
 
 
 # ======================= centerline GT =======================
 def centerline_from_iso(iso_mask, iso):
-    """Skeleton + radius(mm) + topology + DFS order on the isotropic grid.
-
-    Skeletonisation runs on the vessel's tight sub-box (identical result, far
-    cheaper than the full crop). Ordering and topology come from
-    src.coronarycl.centerline so there is one implementation, not two.
-    """
+    """Skeleton + radius(mm) + topology + DFS order on the isotropic grid."""
     idx = np.argwhere(iso_mask)
     lo = np.maximum(idx.min(0) - 2, 0)
     hi = np.minimum(idx.max(0) + 3, np.array(iso_mask.shape))
@@ -259,12 +463,12 @@ def centerline_from_iso(iso_mask, iso):
     if skel.sum() < 20:
         return None
     dist_mm = distance_transform_edt(sub, sampling=(iso, iso, iso))   # radius in mm
-    sub_coords = np.argwhere(skel)              # sub-box frame (ordering reference)
+    sub_coords = np.argwhere(skel)
     radii = dist_mm[skel]
     topo = _classify_topology(skel)
-    order = _traversal_order(sub_coords, radii)          # repo implementation
+    order = _traversal_order(sub_coords, radii)
     n_comp = int(cc_label(skel, structure=_CONN26)[1])
-    coords = (sub_coords + lo)[order]                    # back to iso-grid indices
+    coords = (sub_coords + lo)[order]
     return coords, radii[order], topo[order], n_comp
 
 
@@ -279,36 +483,96 @@ def adjacency_fraction(coords):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--raw_dir", required=True)
-    ap.add_argument("--out_dir", default="./dataset_v3")
+    ap.add_argument("--out_dir", default="./dataset_v3_1",
+                    help="P1-j: versioned by default so v3.0/v3.1 output cannot mix")
+    ap.add_argument("--overwrite", action="store_true",
+                    help="P1-j: delete existing .npz/report files in out_dir before building")
     ap.add_argument("--n", type=int, default=10, help="number of PATIENTS")
     ap.add_argument("--crop_mm", type=float, default=CROP_MM_DEFAULT)
-    ap.add_argument("--iso", type=float, default=ISO_MM_DEFAULT)
+    ap.add_argument("--iso", default="auto",
+                    help="P1-h: 'auto' = min(%.2f, native spacing.min()) per case "
+                         "(guarantees upsampling); or a fixed value in mm, which may "
+                         "DOWNsample -- not recommended" % ISO_MM_CAP)
+    ap.add_argument("--max_iso_voxels", type=float, default=80e6,
+                    help="P1-h: reject a sample whose isotropic grid exceeds this many "
+                         "voxels, rather than silently coarsening it (~0.22 mm over a "
+                         "96 mm cube). Raise it if you have the GPU memory.")
     ap.add_argument("--max_points", type=int, default=4000)
     ap.add_argument("--tol_px", type=float, default=2.0)
-    ap.add_argument("--min_consistency", type=float, default=0.95,
-                    help="per-sample, per-view minimum; samples below are REJECTED")
-    ap.add_argument("--min_adjacency", type=float, default=0.95,
-                    help="per-sample minimum ordering adjacency")
-    ap.add_argument("--max_reject_frac", type=float, default=0.02,
-                    help="gate fails if more than this fraction of samples is rejected")
+    ap.add_argument("--tigre_accuracy", type=float, default=0.5,
+                    help="P2-l: TIGRE ray sampling, vx/sample (SMALLER is finer). "
+                         "DeepCA uses %.1f; we default to 0.5 -- see module docstring."
+                         % DEEPCA_ACCURACY)
+    ap.add_argument("--min_consistency", type=float, default=0.95)
+    ap.add_argument("--min_adjacency", type=float, default=0.95)
+    ap.add_argument("--min_mask_kept", type=float, default=0.95)
+    ap.add_argument("--min_on_detector", type=float, default=0.99)
+    ap.add_argument("--max_dlt_rms", type=float, default=1.0,
+                    help="P2-e/P1-i: max HELD-OUT DLT rms in px; NaN always rejects")
+    ap.add_argument("--require_single_skeleton", dest="require_single_skeleton",
+                    action="store_true", default=True,
+                    help="P1-h: reject when the skeleton is not one component (default on)")
+    ap.add_argument("--allow_split_skeleton", dest="require_single_skeleton",
+                    action="store_false")
+    ap.add_argument("--motion_probe_trans_mm", type=float, default=4.0,
+                    help="P2-n: above this sampled |translation|, a zero observed "
+                         "motion effect is a wiring bug and rejects the sample")
+    ap.add_argument("--motion_probe_rot_deg", type=float, default=5.0)
+    ap.add_argument("--min_motion_effect", type=float, default=0.02,
+                    help="P2-n: DIAGNOSTIC threshold; only enforced per-sample for "
+                         "large-motion draws (see --motion_probe_*)")
+    ap.add_argument("--min_lr_sep_mm", type=float, default=10.0)
+    ap.add_argument("--single_component", choices=["skip", "keep"], default="skip")
+    ap.add_argument("--extra_components", choices=["skip", "largest2"], default="skip")
+    ap.add_argument("--dlt_fit", type=int, default=20)
+    ap.add_argument("--dlt_val", type=int, default=8)
+    ap.add_argument("--max_reject_frac", type=float, default=0.02)
+    ap.add_argument("--max_skip_frac", type=float, default=0.10)
+    ap.add_argument("--motion_3d", action="store_true",
+                    help="NON-DeepCA: also perturb out-of-plane translation (DeepCA L191 = 0)")
     ap.add_argument("--motion_2d", action="store_true",
-                    help="zero the out-of-plane motion translation (see sample_geometry)")
+                    help="DEPRECATED no-op: 2-axis motion is the default")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
-    os.makedirs(args.out_dir, exist_ok=True)
+
+    # ---- P1-j: refuse to build into a directory that already holds samples ----
+    out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    existing = sorted(out.glob("*.npz"))
+    if existing:
+        if not args.overwrite:
+            raise SystemExit(
+                f"REFUSING TO RUN: {out} already contains {len(existing)} .npz file(s).\n"
+                f"  Samples skipped or rejected by this build would survive from the\n"
+                f"  earlier run -- possibly with incompatible pose semantics (pre-v3.1\n"
+                f"  builds baked the simulated motion into `poses`).\n"
+                f"  Re-run with --overwrite to clear them, or choose a fresh --out_dir.")
+        for f in existing:
+            f.unlink()
+        for stale in ("pilot_report_v3.json", "norm_stats_v3.json", "case_splits_v3.json"):
+            (out / stale).unlink(missing_ok=True)
+        print(f"--overwrite: removed {len(existing)} stale .npz from {out}\n")
+    if args.motion_2d:
+        print("NOTE: --motion_2d is now the default and is ignored. "
+              "Use --motion_3d for the non-DeepCA 3-axis variant.\n")
 
     # ---- patient-level 80/10/10 split, before anything else (splits.py) ----
     all_ids = sorted(int(os.path.basename(f).split(".")[0])
                      for f in glob.glob(os.path.join(args.raw_dir, "*.label.nii.gz")))
     splits = make_case_level_split(all_ids, val_frac=0.10, test_frac=0.10, seed=args.seed)
-    write_splits(splits, Path(args.out_dir) / "case_splits_v3.json")
+    write_splits(splits, out / "case_splits_v3.json")
     split_of = {c: s for s in ("train", "val", "test") for c in splits[s]}
-    print(f"patient split over {len(all_ids)}: {len(splits['train'])}/"
-          f"{len(splits['val'])}/{len(splits['test'])}  (both vessels share a split)\n")
+    print(f"builder v{BUILDER_VERSION} | patient split over {len(all_ids)}: "
+          f"{len(splits['train'])}/{len(splits['val'])}/{len(splits['test'])} "
+          f"(both vessels share a split)")
+    print(f"motion: {'3-axis (NON-DeepCA)' if args.motion_3d else '2-axis (DeepCA L191)'} | "
+          f"poses = NOMINAL scanner geometry, poses_render = motion")
+    print(f"iso: {args.iso} (max {args.max_iso_voxels/1e6:.0f}M voxels) | tigre accuracy "
+          f"{args.tigre_accuracy} vx/sample (DeepCA {DEEPCA_ACCURACY})\n")
 
     rng = np.random.default_rng(args.seed)
-    rows, times, failures, rejected, done = [], [], [], [], 0
-    n_comp_hist = []          # raw connected-component count per patient
+    rows, times, failures, rejected, skipped, done = [], [], [], [], [], 0
+    n_comp_hist = []
     for cid in all_ids:
         if done >= args.n:
             break
@@ -321,15 +585,25 @@ def main():
         spacing = np.array(nii.header.get_zooms()[:3], float)
         if mask_full.sum() < 100:
             continue
+        done += 1
+        iso = resolve_iso(spacing, args.iso)
 
-        _lab, _nraw = cc_label(mask_full, structure=_CONN26)
+        _lab, _n = cc_label(mask_full, structure=_CONN26)
         _sz = np.bincount(_lab.ravel()); _sz[0] = 0
-        _big = int((_sz >= MIN_COMPONENT_FRAC * mask_full.sum()).sum())
-        n_comp_hist.append(_big)
-        if _big > 2:
-            failures.append((str(cid), f"{_big} significant components -- only the 2 "
-                                       f"largest kept, {_big - 2} discarded"))
-        for comp in split_components(mask_full, nii.affine):
+        n_comp_hist.append(int((_sz >= MIN_COMPONENT_FRAC * mask_full.sum()).sum()))
+
+        comps, skip_why = split_components(
+            mask_full, nii.affine, spacing,
+            single_component=args.single_component,
+            extra_components=args.extra_components,
+            min_lr_sep_mm=args.min_lr_sep_mm)
+        if skip_why:
+            skipped.append((str(cid), skip_why))
+            print(f"{cid:>12} [{split_of[cid]:>5}]: SKIPPED -- {skip_why}", flush=True)
+            times.append(time.time() - t0)
+            continue
+
+        for comp in comps:
             sid = f"{cid}_{comp['name']}"
             lo, hi = crop_box(comp["mask"], mask_full.shape, spacing, args.crop_mm)
             cmask = comp["mask"][tuple(slice(l, h) for l, h in zip(lo, hi))]
@@ -337,16 +611,28 @@ def main():
             if cmask.sum() < 50:
                 failures.append((sid, "empty crop")); continue
 
-            iso_mask = to_isotropic(cmask, spacing, args.iso)
+            # P1-h: component count BEFORE the resample, so a topology break can
+            # be attributed to the resample rather than the crop.
+            n_comp_precrop = int(cc_label(cmask, structure=_CONN26)[1])
+            iso_mask, down_axes = to_isotropic(cmask, spacing, iso)
+            n_comp_postiso = int(cc_label(iso_mask, structure=_CONN26)[1])
             iso_shape = np.array(iso_mask.shape)
-            iso_sp = np.array([args.iso] * 3)
+            iso_sp = np.array([iso] * 3)
             sVoxel = iso_shape * iso_sp
 
-            cl = centerline_from_iso(iso_mask, args.iso)
+            if int(np.prod(iso_shape)) > args.max_iso_voxels:
+                rejected.append((sid, f"isotropic grid {iso_shape.tolist()} = "
+                                      f"{np.prod(iso_shape)/1e6:.1f}M voxels > "
+                                      f"--max_iso_voxels {args.max_iso_voxels/1e6:.0f}M "
+                                      f"at iso {iso:.3f} mm"))
+                print(f"{sid:>12} [{split_of[cid]:>5}]: REJECTED -- grid too large "
+                      f"({np.prod(iso_shape)/1e6:.1f}M voxels)", flush=True)
+                continue
+
+            cl = centerline_from_iso(iso_mask, iso)
             if cl is None:
                 failures.append((sid, "skeleton too small")); continue
             coords, radii_mm, topo, n_comp = cl
-            # mm relative to the isotropic volume centre == isocentre == calibration origin
             cl_mm = (coords + 0.5 - iso_shape / 2.0) * iso_sp
             adj = adjacency_fraction(coords)
 
@@ -354,7 +640,6 @@ def main():
             inside = float(iso_mask[coords[:, 0], coords[:, 1], coords[:, 2]].mean())
             n_end = int((topo == LABEL_ENDPOINT).sum())
 
-            # ---- pad at build time (preprocessing.py); raises if too long ----
             gt = np.concatenate([cl_mm, radii_mm[:, None], topo[:, None]], 1).astype(np.float32)
             try:
                 padded, pmask = pad_centerline(gt, args.max_points)
@@ -362,135 +647,241 @@ def main():
                 failures.append((sid, f"{len(gt)} points > --max_points {args.max_points}"))
                 continue
 
-            views, motion = sample_geometry(rng, motion_2d=args.motion_2d)
-            images, poses, cons, rmss = [], [], [], []
-            fov_ok = True
-            for k, view in enumerate(views):
-                fov = (DET_N * view["det_spacing"]) / (view["DSD"] / view["DSO"])
-                if sVoxel.max() > fov:
-                    fov_ok = False
-                geo = build_geo(iso_shape, iso_sp, view)
-                angles = np.array([[np.radians(view["alpha"]), np.radians(view["beta"]), 0.0]],
+            views_r, views_s, motion = sample_geometry(rng, motion_3d=args.motion_3d)
+            images, P_scan, P_rend = [], [], []
+            cons_r, cons_s, ond_r, ond_s = [], [], [], []
+            rms_fit_all, rms_val_all, clipped = [], [], []
+            for k in range(2):
+                vr, vs = views_r[k], views_s[k]
+                geo = build_geo(iso_shape, iso_sp, vr, accuracy=args.tigre_accuracy)
+                angles = np.array([[np.radians(vr["alpha"]), np.radians(vr["beta"]), 0.0]],
                                   np.float32)
                 binary = tigre.Ax(iso_mask.astype(np.float32), geo, angles)[0] > 1e-6
-                P, rms = calibrate_P(iso_shape, iso_sp, view, seed=args.seed + k)
-                images.append(binary); poses.append(P); rmss.append(rms)
+                images.append(binary)
+                clipped.append(silhouette_clipped(binary))          # P2-m
 
-                uv = project_points(P, cl_mm)
-                col = np.round(uv[:, 0]).astype(int); row = np.round(uv[:, 1]).astype(int)
-                ib = (col >= 0) & (col < DET_N) & (row >= 0) & (row < DET_N)
+                Pr, fr, vr_rms = calibrate_P(iso_shape, iso_sp, vr, n_fit=args.dlt_fit,
+                                             n_val=args.dlt_val, seed=args.seed + 10 * k,
+                                             accuracy=args.tigre_accuracy)
+                if k == 0:
+                    Ps, fs, vs_rms = Pr, fr, vr_rms             # view 1 carries no motion
+                else:
+                    Ps, fs, vs_rms = calibrate_P(iso_shape, iso_sp, vs, n_fit=args.dlt_fit,
+                                                 n_val=args.dlt_val, seed=args.seed + 97,
+                                                 accuracy=args.tigre_accuracy)
+                P_rend.append(Pr); P_scan.append(Ps)
+                # P1-i: keep EVERY value flat. Never collapse with max() -- that
+                # silently drops a NaN whenever a finite value comes first.
+                rms_fit_all += [fr, fs]
+                rms_val_all += [vr_rms, vs_rms]
+
                 tolm = (binary_dilation(binary, iterations=int(args.tol_px))
                         if args.tol_px > 0 else binary)
-                hit = np.zeros(len(uv), bool); hit[ib] = tolm[row[ib], col[ib]]
-                cons.append(float(hit.mean()))
+
+                def _score(P):
+                    uv = project_points(P, cl_mm)
+                    col = np.round(uv[:, 0]).astype(int); row = np.round(uv[:, 1]).astype(int)
+                    ib = (col >= 0) & (col < DET_N) & (row >= 0) & (row < DET_N)
+                    hit = np.zeros(len(uv), bool)
+                    hit[ib] = tolm[row[ib], col[ib]]
+                    return float(hit.mean()), on_detector_fraction(uv)
+
+                c_r, o_r = _score(Pr); c_s, o_s = _score(Ps)
+                cons_r.append(c_r); ond_r.append(o_r)
+                cons_s.append(c_s); ond_s.append(o_s)
+
+            motion_effect = cons_r[1] - cons_s[1]
+            rms_val_arr = np.asarray(rms_val_all, float)
+            big_motion = (motion["motion_trans_norm_mm"] >= args.motion_probe_trans_mm
+                          or motion["motion_rot_norm_deg"] >= args.motion_probe_rot_deg)
 
             # ---- PER-SAMPLE QC: reject before saving, never on a mean ----
             bad = []
-            if min(cons) < args.min_consistency:
-                bad.append(f"consistency {min(cons):.3f} < {args.min_consistency}")
+            if min(cons_r) < args.min_consistency:
+                bad.append(f"consistency {min(cons_r):.3f} < {args.min_consistency}")
             if adj < args.min_adjacency:
                 bad.append(f"adjacency {adj:.3f} < {args.min_adjacency}")
             if not r_ok:
                 bad.append("radius non-finite or <= 0")
-            if max(rmss) >= 1.0:
-                bad.append(f"DLT rms {max(rmss):.2f}px >= 1.0")
-            if not fov_ok:
-                bad.append("crop exceeds detector FOV")
+            # P1-i: NaN can never pass this form of the check.
+            if rms_val_arr.size == 0 or not np.isfinite(rms_val_arr).all():
+                bad.append("held-out DLT rms is NaN (too few visible validation markers)")
+            elif rms_val_arr.max() >= args.max_dlt_rms:
+                bad.append(f"held-out DLT rms {rms_val_arr.max():.2f}px >= {args.max_dlt_rms}")
+            if min(ond_r + ond_s) < args.min_on_detector:
+                bad.append(f"on-detector {min(ond_r + ond_s):.3f} < {args.min_on_detector}")
+            if any(clipped):                                        # P2-m
+                bad.append(f"silhouette clipped at detector border (views "
+                           f"{[i for i, c in enumerate(clipped) if c]})")
+            if mask_kept < args.min_mask_kept:
+                bad.append(f"mask_kept {mask_kept:.3f} < {args.min_mask_kept}")
+            # P1-h: the mask is one component by construction, so its skeleton
+            # must be too; anything else means the crop or the resample broke it.
+            if args.require_single_skeleton and n_comp != 1:
+                bad.append(f"skeleton has {n_comp} components "
+                           f"(mask pre-resample {n_comp_precrop}, post {n_comp_postiso}"
+                           f"{', DOWNSAMPLED axes ' + str(down_axes) if down_axes else ''})")
+            # P2-n: a small motion draw producing a small effect is CORRECT and
+            # must not be rejected; only a large draw with no effect is a bug.
+            if big_motion and motion_effect < args.min_motion_effect:
+                bad.append(f"motion effect {motion_effect:.3f} < {args.min_motion_effect} "
+                           f"despite |t|={motion['motion_trans_norm_mm']:.1f}mm "
+                           f"|r|={motion['motion_rot_norm_deg']:.1f}deg (wiring bug)")
             if bad:
                 rejected.append((sid, "; ".join(bad)))
                 print(f"{sid:>12} [{split_of[cid]:>5}]: REJECTED -- {'; '.join(bad)}", flush=True)
                 continue
 
             np.savez_compressed(
-                os.path.join(args.out_dir, f"{sid}.npz"),
+                out / f"{sid}.npz",
+                builder_version=BUILDER_VERSION,     # P1-j: assert on this in the loader
                 images=np.stack(images).astype(np.uint8),
-                poses=np.stack(poses).astype(np.float32),
-                centerline=padded, centerline_mask=pmask,   # x_mm,y_mm,z_mm,radius_mm,topology
+                # MODEL INPUT: nominal scanner geometry, motion NOT encoded.
+                poses=np.stack(P_scan).astype(np.float32),
+                # VALIDATION ONLY: carries the simulated motion.
+                poses_render=np.stack(P_rend).astype(np.float32),
+                centerline=padded, centerline_mask=pmask,   # RAW mm: x,y,z,radius,topology
                 n_points=len(gt), patient_id=cid, vessel=comp["name"], split=split_of[cid],
-                iso_mm=args.iso, iso_shape=iso_shape.astype(np.int32),
+                iso_mm=np.float32(iso), iso_shape=iso_shape.astype(np.int32),
                 sVoxel=sVoxel.astype(np.float32), crop_lo=lo.astype(np.int32),
                 native_spacing=spacing.astype(np.float32),
-                geometry=json.dumps([{a: (b.tolist() if isinstance(b, np.ndarray) else b)
-                                      for a, b in vw.items()} for vw in views]),
+                mask_kept=np.float32(mask_kept),
+                tigre_accuracy=np.float32(args.tigre_accuracy),
+                geometry_render=json.dumps([{a: (b.tolist() if isinstance(b, np.ndarray) else b)
+                                             for a, b in vw.items()} for vw in views_r]),
+                geometry_scanner=json.dumps([{a: (b.tolist() if isinstance(b, np.ndarray) else b)
+                                              for a, b in vw.items()} for vw in views_s]),
                 motion=json.dumps(motion),
             )
             rows.append(dict(sample=sid, patient=cid, vessel=comp["name"], split=split_of[cid],
-                             consistency=cons, dlt_rms=[round(r, 3) for r in rmss],
+                             consistency=cons_r, consistency_scanner=cons_s,
+                             motion_effect=round(motion_effect, 4),
+                             motion_trans_mm=round(motion["motion_trans_norm_mm"], 2),
+                             motion_rot_deg=round(motion["motion_rot_norm_deg"], 2),
+                             on_det_render=[round(v, 4) for v in ond_r],
+                             on_det_scanner=[round(v, 4) for v in ond_s],
+                             dlt_rms_fit=[round(r, 3) for r in rms_fit_all],
+                             dlt_rms_val=[round(r, 3) for r in rms_val_all],
                              n_points=int(len(gt)), adjacency=round(adj, 3), radius_ok=r_ok,
                              radius_mm=[round(float(radii_mm.min()), 2),
                                         round(float(radii_mm.max()), 2)],
                              skeleton_inside=round(inside, 4), n_endpoints=n_end,
-                             n_skel_components=n_comp, mask_kept=round(mask_kept, 3),
-                             fov_ok=fov_ok))
-            print(f"{sid:>12} [{split_of[cid]:>5}]: cons {cons[0]:.3f}/{cons[1]:.3f} | "
-                  f"rms {rmss[0]:.2f}/{rmss[1]:.2f}px | pts {len(gt)} | adj {adj:.3f} | "
-                  f"r {radii_mm.min():.2f}-{radii_mm.max():.2f}mm | mask_kept {mask_kept:.3f} | "
-                  f"comps {n_comp}{'' if fov_ok else '  FOV!'}", flush=True)
-        times.append(time.time() - t0); done += 1
+                             n_skel_components=n_comp, n_mask_comp_precrop=n_comp_precrop,
+                             n_mask_comp_postiso=n_comp_postiso,
+                             iso_mm=round(iso, 4), downsampled_axes=down_axes,
+                             iso_voxels=int(np.prod(iso_shape)),
+                             mask_kept=round(mask_kept, 3),
+                             lr_sep_mm=round(comp["lr_sep_mm"], 1)))
+            print(f"{sid:>12} [{split_of[cid]:>5}]: cons {cons_r[0]:.3f}/{cons_r[1]:.3f} | "
+                  f"scan {cons_s[0]:.3f}/{cons_s[1]:.3f} (dm {motion_effect:+.3f}) | "
+                  f"rms_val {rms_val_arr.max():.2f}px | onDet {min(ond_r + ond_s):.3f} | "
+                  f"iso {iso:.3f} ({iso_shape[0]}^3-ish) | pts {len(gt)} | adj {adj:.3f} | "
+                  f"kept {mask_kept:.3f} | comps {n_comp}", flush=True)
+        times.append(time.time() - t0)
 
     if not rows:
-        print("No samples produced."); return
+        print("No samples produced.")
+        for s, why in skipped:
+            print(f"  SKIPPED {s}: {why}")
+        raise SystemExit(1)                                       # P2-k
 
     # ---- normalisation stats from TRAIN patients only (preprocessing.py) ----
     tr = [r for r in rows if r["split"] == "train"]
     if tr:
         mm_centerlines = {}
         for r in tr:
-            z = np.load(os.path.join(args.out_dir, f"{r['sample']}.npz"))
+            z = np.load(out / f"{r['sample']}.npz")
             mm_centerlines[r["sample"]] = z["centerline"][z["centerline_mask"]]
         stats = compute_centerline_norm_stats(mm_centerlines, list(mm_centerlines))
-        stats.update(n_train_samples=len(tr), iso_mm=args.iso,
-                     crop_mm=args.crop_mm, max_points=args.max_points)
-        json.dump(stats, open(os.path.join(args.out_dir, "norm_stats_v3.json"), "w"), indent=2)
+        stats.update(n_train_samples=len(tr), builder_version=BUILDER_VERSION,
+                     iso=args.iso, crop_mm=args.crop_mm, max_points=args.max_points)
+        json.dump(stats, open(out / "norm_stats_v3.json", "w"), indent=2)
         print(f"\nnorm stats (train only, n={len(tr)}): "
               f"coord_std {np.round(stats['coord_std'], 2)} "
               f"radius {stats['radius_mean']:.2f}+/-{stats['radius_std']:.2f} mm")
 
     allc = np.array([c for r in rows for c in r["consistency"]])
-    rmsall = np.array([v for r in rows for v in r["dlt_rms"]])
+    allcs = np.array([c for r in rows for c in r["consistency_scanner"]])
+    rmsv = np.array([v for r in rows for v in r["dlt_rms_val"]], float)
+    rmsf = np.array([v for r in rows for v in r["dlt_rms_fit"]], float)
+    ond = np.array([v for r in rows for v in (r["on_det_render"] + r["on_det_scanner"])])
     adjall = np.array([r["adjacency"] for r in rows])
     npts = np.array([r["n_points"] for r in rows])
     kept = np.array([r["mask_kept"] for r in rows])
-    print("\n" + "=" * 72)
-    print(f"patients {done} | samples {len(rows)} ({len(rows)/max(done,1):.1f} vessels/patient)")
-    print(f"T3 consistency   mean {allc.mean():.3f}  min {allc.min():.3f}   [tol {args.tol_px}px]")
-    print(f"T2 DLT rms       mean {rmsall.mean():.2f}px  max {rmsall.max():.2f}px")
+    dm = np.array([r["motion_effect"] for r in rows])
+    mag = np.array([r["motion_trans_mm"] for r in rows])
+    isos = np.array([r["iso_mm"] for r in rows])
+    print("\n" + "=" * 76)
+    print(f"builder v{BUILDER_VERSION} | patients {done} | samples {len(rows)} "
+          f"({len(rows)/max(done,1):.1f} vessels/patient)")
+    print(f"T3 consistency   mean {allc.mean():.3f}  min {allc.min():.3f}   [render pose, tol {args.tol_px}px]")
+    print(f"   under scanner mean {allcs.mean():.3f}  min {allcs.min():.3f}   [motion NOT compensated -- the task]")
+    print(f"T2 DLT rms       fit mean {rmsf.mean():.2f}px | HELD-OUT mean {rmsv.mean():.2f}px  max {rmsv.max():.2f}px")
     print(f"T1 skel inside   min {min(r['skeleton_inside'] for r in rows):.4f}")
-    print(f"ordering adj     mean {adjall.mean():.3f}  min {adjall.min():.3f}  (target > 0.95)")
+    print(f"on-detector      mean {ond.mean():.4f}  min {ond.min():.4f}  (both poses)")
+    print(f"ordering adj     mean {adjall.mean():.3f}  min {adjall.min():.3f}")
     print(f"radius sane      {sum(r['radius_ok'] for r in rows)}/{len(rows)} samples")
     print(f"points/vessel    mean {npts.mean():.0f}  max {npts.max()}  (max_points {args.max_points})")
-    print(f"mask kept in crop mean {kept.mean():.3f}  min {kept.min():.3f}")
-    print(f"skeleton comps   mean {np.mean([r['n_skel_components'] for r in rows]):.1f} (1 = clean tree)")
+    print(f"mask kept        mean {kept.mean():.3f}  min {kept.min():.3f}  (gate {args.min_mask_kept})")
+    print(f"iso grid         {isos.min():.3f}-{isos.max():.3f} mm | max voxels "
+          f"{max(r['iso_voxels'] for r in rows):,}")
+    n_down = sum(1 for r in rows if r["downsampled_axes"])
+    print(f"downsampled axes {n_down}/{len(rows)} samples "
+          f"{'(EXPECT 0 with --iso auto)' if n_down else 'OK'}")
+    print(f"skeleton comps   all == 1: {all(r['n_skel_components'] == 1 for r in rows)}")
+
+    # ---- P2-n: motion is a DIAGNOSTIC, reported not silently filtered ----
+    corr = float(np.corrcoef(mag, dm)[0, 1]) if len(rows) > 2 and mag.std() > 0 else float("nan")
+    print(f"motion effect    mean {dm.mean():+.3f}  min {dm.min():+.3f}  max {dm.max():+.3f}")
+    print(f"   |t| vs effect corr {corr:+.2f}   (expect clearly positive; "
+          f"low-motion draws SHOULD show little effect)")
     if n_comp_hist:
         _h = np.array(n_comp_hist)
         print(f"vessel comps/pt  mean {_h.mean():.2f}  max {_h.max()}  "
-              f"| patients with >2: {(_h > 2).sum()}")
-    if any(not r["fov_ok"] for r in rows):
-        print(f"WARNING: {sum(not r['fov_ok'] for r in rows)} sample(s) exceeded detector FOV")
+              f"| ==1: {(_h == 1).sum()}  ==2: {(_h == 2).sum()}  >2: {(_h > 2).sum()}")
     for s, why in failures:
         print(f"  FAILURE {s}: {why}")
     per = float(np.mean(times))
     print(f"per-patient {per:.1f}s  ->  ETA 1000 patients: {per*1000/3600:.1f} h")
+
     n_attempt = len(rows) + len(rejected)
     reject_frac = len(rejected) / max(n_attempt, 1)
+    skip_frac = len(skipped) / max(done, 1)
     print(f"rejected         {len(rejected)}/{n_attempt} samples "
           f"({reject_frac:.1%}; limit {args.max_reject_frac:.1%})")
     for s_, why in rejected:
         print(f"  REJECTED {s_}: {why}")
-    # Every SAVED sample already passed the per-sample QC above, so these
-    # minima are guarantees, not averages. The gate only has to check that
-    # too few samples were thrown away and that nothing was truncated.
+    print(f"skipped          {len(skipped)}/{done} patients "
+          f"({skip_frac:.1%}; limit {args.max_skip_frac:.1%})")
+    for s_, why in skipped:
+        print(f"  SKIPPED {s_}: {why}")
+
+    # Every SAVED sample already passed per-sample QC, so these minima are
+    # guarantees. The gate checks the aggregate story: too much thrown away, or
+    # motion that is not reaching the render at all.
+    motion_alive = bool(dm.mean() >= args.min_motion_effect
+                        and (np.isnan(corr) or corr > 0.0))
     ok = (reject_frac <= args.max_reject_frac
+          and skip_frac <= args.max_skip_frac
           and allc.min() >= args.min_consistency
           and adjall.min() >= args.min_adjacency
-          and rmsall.max() < 1.0
+          and np.isfinite(rmsv).all() and rmsv.max() < args.max_dlt_rms
+          and ond.min() >= args.min_on_detector
+          and kept.min() >= args.min_mask_kept
+          and motion_alive
+          and n_down == 0
           and all(r["radius_ok"] for r in rows)
           and not failures)
-    print("GATE PASSED — dataset v3 validated." if ok else
-          "GATE FAILED — inspect the failing metric above; do not train.")
-    print("=" * 72)
-    json.dump(rows, open(os.path.join(args.out_dir, "pilot_report_v3.json"), "w"), indent=2)
+    if not motion_alive:
+        print("  GATE NOTE: motion effect is ~zero across the whole build -- "
+              "the render is probably not receiving the perturbation.")
+    json.dump(rows, open(out / "pilot_report_v3.json", "w"), indent=2)
     print("saved pilot_report_v3.json + case_splits_v3.json + norm_stats_v3.json + per-sample npz")
+    print(("GATE PASSED — dataset v%s validated." % BUILDER_VERSION) if ok else
+          "GATE FAILED — inspect the failing metric above; do not train.")
+    print("=" * 76)
+    if not ok:
+        raise SystemExit(1)                                       # P2-k
 
 
 if __name__ == "__main__":
