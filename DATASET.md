@@ -23,26 +23,37 @@ each with an expert-annotated coronary artery segmentation mask.
 This project needs 2D projections + 3D centerline ground truth, not
 the raw CCTA volumes themselves:
 
-1. **Centerline + radius ground truth** — extracted locally from each
-   `<case>.label.nii.gz` via 3D skeletonization
-   (`prepare_centerlines.py`, Step 1.1). Output: one `(N, 4)`
-   `(x, y, z, radius)` array per case in `data/processed/centerlines/`.
-2. **Synthetic 2D X-ray projections (DRRs)** — generated on Colab from
-   each `<case>.img.nii.gz` volume via cone-beam projection, with a
-   simulated non-rigid motion perturbation between the two views
-   (`notebooks/colab_drr_generation.ipynb`, Step 1.2). Output: 2
-   projection images + their projection matrices per case in
-   `data/processed/projections/`.
+Both steps below are performed by `build_dataset_v3.py` in a single pass, on
+one isotropic grid, so mask / centerline / radius / projection / pose share one
+coordinate frame by construction. (Earlier versions split this across
+`prepare_centerlines.py` and a separate `src/coronarycl/drr.py` projection
+module; both have been removed — the two-frame design was the source of the
+v1/v2 projection-consistency failures.)
+
+1. **Centerline + radius ground truth** — each `<case>.label.nii.gz` is split
+   into coronary systems (3D connected components, side from the NIfTI
+   affine), cropped to a 96 mm cube, resampled to an isotropic grid, then
+   skeletonized. Radius comes from `distance_transform_edt(sampling=iso)`, so
+   it is in millimetres. Output per sample: an `(N, 5)`
+   `(x, y, z, radius, topology)` array in raw mm, DFS-ordered.
+2. **Synthetic 2D X-ray projections** — 2 binary vessel silhouettes per sample,
+   projected with TIGRE (Biguri et al., 2016) through DeepCA's two-view
+   geometry (512² detector, ~0.278 mm pixels), with DeepCA's rigid motion
+   perturbation (±10° rotation, ±8 mm two-axis translation) applied to view 2
+   only. Each view carries two 3×4 projection matrices: `poses` (nominal
+   scanner geometry, motion removed — the model input) and `poses_render`
+   (motion included — validation only).
 
 Both `data/raw/` and `data/processed/` are gitignored — regenerate
 locally rather than committing.
 
 ## Splits
 
-Case-level split (never split by view — both projections of one case
-must stay in the same split, or the model leaks information across
-train/val/test). Default ~960/20/20 on the full 1000 cases, generated
-by `make_splits.py` (Step 1.3) into `data/splits/case_splits.json`.
+Patient-level split (never split by view or by vessel — both projections and
+both coronary systems of one patient stay in the same split, or the model leaks
+information across train/val/test). Default 80/10/10 over the available
+patients, written by `build_dataset_v3.py` to `case_splits_v3.json` in the
+output directory alongside the samples.
 
 ## Class / severity balance
 
