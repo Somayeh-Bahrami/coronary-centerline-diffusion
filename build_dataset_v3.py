@@ -172,12 +172,7 @@ imports resolve.
 Usage:
     python build_dataset_v3.py --raw_dir DIR --out_dir ./dataset_v3_1 --n 20
 """
-import argparse
-import glob
-import json
-import os
-import sys
-import time
+import argparse, glob, json, os, sys, time
 from pathlib import Path
 
 import numpy as np
@@ -209,8 +204,7 @@ V1_DSO_RANGE, V2_DSO_JITTER = (745.0, 785.0), 3.0                # L158, L190
 V1_PRIMARY, V1_SECONDARY = (18.0, 42.0), (-8.0, 8.0)             # L161-162
 V2_PRIMARY, V2_SECONDARY = (-8.0, 8.0), (18.0, 42.0)             # L193-194
 MOTION_ROT_DEG, MOTION_TRANS_MM = 10.0, 8.0                      # L191, L196
-# L137 (we use 0.5, see P2-l)
-DEEPCA_ACCURACY = 1.0
+DEEPCA_ACCURACY = 1.0                                            # L137 (we use 0.5, see P2-l)
 CROP_MM_DEFAULT = 96.0
 ISO_MM_CAP = 0.35            # never coarser than this; --iso auto goes finer as needed
 MIN_COMPONENT_FRAC = 0.05
@@ -322,8 +316,7 @@ def calibrate_P(shape, spacing, view, n_fit=20, n_val=8, cal_n=64, seed=0, accur
     cal_shape = (cal_n, cal_n, cal_n)
     cal_spacing = sVoxel / cal_n
     geo = build_geo(cal_shape, cal_spacing, view, accuracy=accuracy)
-    angles = np.array(
-        [[np.radians(view["alpha"]), np.radians(view["beta"]), 0.0]], np.float32)
+    angles = np.array([[np.radians(view["alpha"]), np.radians(view["beta"]), 0.0]], np.float32)
 
     rng = np.random.default_rng(seed)
     centre = np.array(cal_shape) / 2.0
@@ -349,8 +342,7 @@ def calibrate_P(shape, spacing, view, n_fit=20, n_val=8, cal_n=64, seed=0, accur
 
     fit = _draw(n_fit)
     if len(fit) < 6:
-        raise RuntimeError(
-            "DLT calibration failed: too few visible fit markers")
+        raise RuntimeError("DLT calibration failed: too few visible fit markers")
 
     A = []
     for (X, x, y) in fit:
@@ -422,8 +414,7 @@ def split_components(mask, affine, spacing, single_component="skip",
         return [], "no components"
     sizes = np.bincount(lab.ravel())
     sizes[0] = 0
-    sig = [i for i in range(1, n + 1) if sizes[i] >=
-           MIN_COMPONENT_FRAC * mask.sum()]
+    sig = [i for i in range(1, n + 1) if sizes[i] >= MIN_COMPONENT_FRAC * mask.sum()]
     sig = sorted(sig, key=lambda i: -sizes[i])
     if not sig:
         return [], "no significant components"
@@ -513,8 +504,7 @@ def centerline_from_iso(iso_mask, iso):
     skel = skeletonize(sub)
     if skel.sum() < 20:
         return None
-    dist_mm = distance_transform_edt(
-        sub, sampling=(iso, iso, iso))   # radius in mm
+    dist_mm = distance_transform_edt(sub, sampling=(iso, iso, iso))   # radius in mm
     sub_coords = np.argwhere(skel)
     radii = dist_mm[skel]
     topo = _classify_topology(skel)
@@ -558,7 +548,20 @@ def main():
     ap.add_argument("--min_consistency", type=float, default=0.95)
     ap.add_argument("--min_adjacency", type=float, default=0.95)
     ap.add_argument("--min_mask_kept", type=float, default=0.95)
-    ap.add_argument("--min_on_detector", type=float, default=0.99)
+    ap.add_argument("--min_on_detector", type=float, default=0.95,
+                    help="P2-f: minimum PER-VIEW fraction of centerline points inside "
+                         "the 512^2 detector. Was 0.99, which was arbitrary: DeepCA's "
+                         "FOV at isocentre is 99-115 mm while a 96 mm crop spans "
+                         "121-136 mm once rotated, so partial per-view loss is expected.")
+    ap.add_argument("--min_coverage", type=float, default=1.0,
+                    help="P1-o: minimum fraction of GT points on-detector in AT LEAST "
+                         "ONE view. A point invisible in both is unlearnable, so this "
+                         "is the criterion that actually matters; keep it at 1.0.")
+    ap.add_argument("--reject_clipped", action="store_true",
+                    help="P2-m: reject when the silhouette touches a detector border. "
+                         "OFF by default -- clinical angiography clips vessels at the "
+                         "frame edge routinely and DeepCA's geometry makes it "
+                         "unavoidable for a 96 mm crop, so it is a diagnostic.")
     ap.add_argument("--max_dlt_rms", type=float, default=1.0,
                     help="P2-e/P1-i: max HELD-OUT DLT rms in px; NaN always rejects")
     ap.add_argument("--require_single_skeleton", dest="require_single_skeleton",
@@ -574,10 +577,8 @@ def main():
                     help="P2-n: DIAGNOSTIC threshold; only enforced per-sample for "
                          "large-motion draws (see --motion_probe_*)")
     ap.add_argument("--min_lr_sep_mm", type=float, default=10.0)
-    ap.add_argument("--single_component",
-                    choices=["skip", "keep"], default="skip")
-    ap.add_argument("--extra_components",
-                    choices=["skip", "largest2"], default="skip")
+    ap.add_argument("--single_component", choices=["skip", "keep"], default="skip")
+    ap.add_argument("--extra_components", choices=["skip", "largest2"], default="skip")
     ap.add_argument("--dlt_fit", type=int, default=20)
     ap.add_argument("--dlt_val", type=int, default=8)
     ap.add_argument("--max_reject_frac", type=float, default=0.15,
@@ -616,8 +617,7 @@ def main():
     # ---- patient-level 80/10/10 split, before anything else (splits.py) ----
     all_ids = sorted(int(os.path.basename(f).split(".")[0])
                      for f in glob.glob(os.path.join(args.raw_dir, "*.label.nii.gz")))
-    splits = make_case_level_split(
-        all_ids, val_frac=0.10, test_frac=0.10, seed=args.seed)
+    splits = make_case_level_split(all_ids, val_frac=0.10, test_frac=0.10, seed=args.seed)
     write_splits(splits, out / "case_splits_v3.json")
     split_of = {c: s for s in ("train", "val", "test") for c in splits[s]}
     print(f"builder v{BUILDER_VERSION} | patient split over {len(all_ids)}: "
@@ -647,10 +647,8 @@ def main():
         iso = resolve_iso(spacing, args.iso)
 
         _lab, _n = cc_label(mask_full, structure=_CONN26)
-        _sz = np.bincount(_lab.ravel())
-        _sz[0] = 0
-        n_comp_hist.append(
-            int((_sz >= MIN_COMPONENT_FRAC * mask_full.sum()).sum()))
+        _sz = np.bincount(_lab.ravel()); _sz[0] = 0
+        n_comp_hist.append(int((_sz >= MIN_COMPONENT_FRAC * mask_full.sum()).sum()))
 
         comps, skip_why = split_components(
             mask_full, nii.affine, spacing,
@@ -659,20 +657,17 @@ def main():
             min_lr_sep_mm=args.min_lr_sep_mm)
         if skip_why:
             skipped.append((str(cid), skip_why))
-            print(
-                f"{cid:>12} [{split_of[cid]:>5}]: SKIPPED -- {skip_why}", flush=True)
+            print(f"{cid:>12} [{split_of[cid]:>5}]: SKIPPED -- {skip_why}", flush=True)
             times.append(time.time() - t0)
             continue
 
         for comp in comps:
             sid = f"{cid}_{comp['name']}"
-            lo, hi = crop_box(
-                comp["mask"], mask_full.shape, spacing, args.crop_mm)
+            lo, hi = crop_box(comp["mask"], mask_full.shape, spacing, args.crop_mm)
             cmask = comp["mask"][tuple(slice(l, h) for l, h in zip(lo, hi))]
             mask_kept = float(cmask.sum()) / float(comp["mask"].sum())
             if cmask.sum() < 50:
-                failures.append((sid, "empty crop"))
-                continue
+                failures.append((sid, "empty crop")); continue
 
             # P1-h: component count BEFORE the resample, so a topology break can
             # be attributed to the resample rather than the crop.
@@ -685,49 +680,42 @@ def main():
 
             if int(np.prod(iso_shape)) > args.max_iso_voxels:
                 rejected.append((sid, f"isotropic grid {iso_shape.tolist()} = "
-                                 f"{np.prod(iso_shape)/1e6:.1f}M voxels > "
-                                 f"--max_iso_voxels {args.max_iso_voxels/1e6:.0f}M "
-                                 f"at iso {iso:.3f} mm"))
+                                      f"{np.prod(iso_shape)/1e6:.1f}M voxels > "
+                                      f"--max_iso_voxels {args.max_iso_voxels/1e6:.0f}M "
+                                      f"at iso {iso:.3f} mm"))
                 print(f"{sid:>12} [{split_of[cid]:>5}]: REJECTED -- grid too large "
                       f"({np.prod(iso_shape)/1e6:.1f}M voxels)", flush=True)
                 continue
 
             cl = centerline_from_iso(iso_mask, iso)
             if cl is None:
-                failures.append((sid, "skeleton too small"))
-                continue
+                failures.append((sid, "skeleton too small")); continue
             coords, radii_mm, topo, n_comp = cl
             cl_mm = (coords + 0.5 - iso_shape / 2.0) * iso_sp
             adj = adjacency_fraction(coords)
 
             r_ok = bool(np.isfinite(radii_mm).all() and (radii_mm > 0).all())
-            inside = float(
-                iso_mask[coords[:, 0], coords[:, 1], coords[:, 2]].mean())
+            inside = float(iso_mask[coords[:, 0], coords[:, 1], coords[:, 2]].mean())
             n_end = int((topo == LABEL_ENDPOINT).sum())
 
-            gt = np.concatenate(
-                [cl_mm, radii_mm[:, None], topo[:, None]], 1).astype(np.float32)
+            gt = np.concatenate([cl_mm, radii_mm[:, None], topo[:, None]], 1).astype(np.float32)
             try:
                 padded, pmask = pad_centerline(gt, args.max_points)
             except ValueError:
-                failures.append(
-                    (sid, f"{len(gt)} points > --max_points {args.max_points}"))
+                failures.append((sid, f"{len(gt)} points > --max_points {args.max_points}"))
                 continue
 
-            views_r, views_s, motion = sample_geometry(
-                rng, motion_3d=args.motion_3d)
+            views_r, views_s, motion = sample_geometry(rng, motion_3d=args.motion_3d)
             images, P_scan, P_rend = [], [], []
             cons_r, cons_s, ond_r, ond_s = [], [], [], []
             rms_fit_all, rms_val_all, clipped = [], [], []
             inb_r, inb_s = [], []      # per-point on-detector masks, per view
             for k in range(2):
                 vr, vs = views_r[k], views_s[k]
-                geo = build_geo(iso_shape, iso_sp, vr,
-                                accuracy=args.tigre_accuracy)
+                geo = build_geo(iso_shape, iso_sp, vr, accuracy=args.tigre_accuracy)
                 angles = np.array([[np.radians(vr["alpha"]), np.radians(vr["beta"]), 0.0]],
                                   np.float32)
-                binary = tigre.Ax(iso_mask.astype(
-                    np.float32), geo, angles)[0] > 1e-6
+                binary = tigre.Ax(iso_mask.astype(np.float32), geo, angles)[0] > 1e-6
                 images.append(binary)
                 clipped.append(silhouette_clipped(binary))          # P2-m
 
@@ -740,8 +728,7 @@ def main():
                     Ps, fs, vs_rms = calibrate_P(iso_shape, iso_sp, vs, n_fit=args.dlt_fit,
                                                  n_val=args.dlt_val, seed=args.seed + 97,
                                                  accuracy=args.tigre_accuracy)
-                P_rend.append(Pr)
-                P_scan.append(Ps)
+                P_rend.append(Pr); P_scan.append(Ps)
                 # P1-i: keep EVERY value flat. Never collapse with max() -- that
                 # silently drops a NaN whenever a finite value comes first.
                 rms_fit_all += [fr, fs]
@@ -752,22 +739,15 @@ def main():
 
                 def _score(P):
                     uv = project_points(P, cl_mm)
-                    col = np.round(uv[:, 0]).astype(int)
-                    row = np.round(uv[:, 1]).astype(int)
-                    ib = (col >= 0) & (col < DET_N) & (
-                        row >= 0) & (row < DET_N)
+                    col = np.round(uv[:, 0]).astype(int); row = np.round(uv[:, 1]).astype(int)
+                    ib = (col >= 0) & (col < DET_N) & (row >= 0) & (row < DET_N)
                     hit = np.zeros(len(uv), bool)
                     hit[ib] = tolm[row[ib], col[ib]]
                     return float(hit.mean()), on_detector_fraction(uv), ib
 
-                c_r, o_r, ib_r = _score(Pr)
-                c_s, o_s, ib_s = _score(Ps)
-                cons_r.append(c_r)
-                ond_r.append(o_r)
-                inb_r.append(ib_r)
-                cons_s.append(c_s)
-                ond_s.append(o_s)
-                inb_s.append(ib_s)
+                c_r, o_r, ib_r = _score(Pr); c_s, o_s, ib_s = _score(Ps)
+                cons_r.append(c_r); ond_r.append(o_r); inb_r.append(ib_r)
+                cons_s.append(c_s); ond_s.append(o_s); inb_s.append(ib_s)
 
             # P1-o: the disqualifying condition is a GT point with no support in
             # EITHER view -- no model can place it.  A point missing from one view
@@ -785,27 +765,22 @@ def main():
             # ---- PER-SAMPLE QC: reject before saving, never on a mean ----
             bad = []
             if min(cons_r) < args.min_consistency:
-                bad.append(
-                    f"consistency {min(cons_r):.3f} < {args.min_consistency}")
+                bad.append(f"consistency {min(cons_r):.3f} < {args.min_consistency}")
             if adj < args.min_adjacency:
                 bad.append(f"adjacency {adj:.3f} < {args.min_adjacency}")
             if not r_ok:
                 bad.append("radius non-finite or <= 0")
             # P1-i: NaN can never pass this form of the check.
             if rms_val_arr.size == 0 or not np.isfinite(rms_val_arr).all():
-                bad.append(
-                    "held-out DLT rms is NaN (too few visible validation markers)")
+                bad.append("held-out DLT rms is NaN (too few visible validation markers)")
             elif rms_val_arr.max() >= args.max_dlt_rms:
-                bad.append(
-                    f"held-out DLT rms {rms_val_arr.max():.2f}px >= {args.max_dlt_rms}")
+                bad.append(f"held-out DLT rms {rms_val_arr.max():.2f}px >= {args.max_dlt_rms}")
             if min(ond_r + ond_s) < args.min_on_detector:
-                bad.append(
-                    f"on-detector {min(ond_r + ond_s):.3f} < {args.min_on_detector}")
+                bad.append(f"on-detector {min(ond_r + ond_s):.3f} < {args.min_on_detector}")
             if min(cover_r, cover_s) < args.min_coverage:            # P1-o
                 bad.append(f"union coverage {min(cover_r, cover_s):.3f} < "
                            f"{args.min_coverage} (points invisible in BOTH views)")
-            # P2-m, opt-in
-            if args.reject_clipped and any(clipped):
+            if args.reject_clipped and any(clipped):                 # P2-m, opt-in
                 bad.append(f"silhouette clipped at detector border (views "
                            f"{[i for i, c in enumerate(clipped) if c]})")
             if mask_kept < args.min_mask_kept:
@@ -824,8 +799,7 @@ def main():
                            f"|r|={motion['motion_rot_norm_deg']:.1f}deg (wiring bug)")
             if bad:
                 rejected.append((sid, "; ".join(bad)))
-                print(
-                    f"{sid:>12} [{split_of[cid]:>5}]: REJECTED -- {'; '.join(bad)}", flush=True)
+                print(f"{sid:>12} [{split_of[cid]:>5}]: REJECTED -- {'; '.join(bad)}", flush=True)
                 continue
 
             np.savez_compressed(
@@ -852,14 +826,11 @@ def main():
             rows.append(dict(sample=sid, patient=cid, vessel=comp["name"], split=split_of[cid],
                              consistency=cons_r, consistency_scanner=cons_s,
                              motion_effect=round(motion_effect, 4),
-                             motion_trans_mm=round(
-                                 motion["motion_trans_norm_mm"], 2),
-                             motion_rot_deg=round(
-                                 motion["motion_rot_norm_deg"], 2),
+                             motion_trans_mm=round(motion["motion_trans_norm_mm"], 2),
+                             motion_rot_deg=round(motion["motion_rot_norm_deg"], 2),
                              coverage_render=round(cover_r, 4),
                              coverage_scanner=round(cover_s, 4),
-                             clipped_views=[
-                                 i for i, c in enumerate(clipped) if c],
+                             clipped_views=[i for i, c in enumerate(clipped) if c],
                              on_det_render=[round(v, 4) for v in ond_r],
                              on_det_scanner=[round(v, 4) for v in ond_s],
                              dlt_rms_fit=[round(r, 3) for r in rms_fit_all],
@@ -894,8 +865,7 @@ def main():
         for r in tr:
             z = np.load(out / f"{r['sample']}.npz")
             mm_centerlines[r["sample"]] = z["centerline"][z["centerline_mask"]]
-        stats = compute_centerline_norm_stats(
-            mm_centerlines, list(mm_centerlines))
+        stats = compute_centerline_norm_stats(mm_centerlines, list(mm_centerlines))
         stats.update(n_train_samples=len(tr), builder_version=BUILDER_VERSION,
                      iso=args.iso, crop_mm=args.crop_mm, max_points=args.max_points)
         json.dump(stats, open(out / "norm_stats_v3.json", "w"), indent=2)
@@ -907,8 +877,7 @@ def main():
     allcs = np.array([c for r in rows for c in r["consistency_scanner"]])
     rmsv = np.array([v for r in rows for v in r["dlt_rms_val"]], float)
     rmsf = np.array([v for r in rows for v in r["dlt_rms_fit"]], float)
-    ond = np.array([v for r in rows for v in (
-        r["on_det_render"] + r["on_det_scanner"])])
+    ond = np.array([v for r in rows for v in (r["on_det_render"] + r["on_det_scanner"])])
     adjall = np.array([r["adjacency"] for r in rows])
     npts = np.array([r["n_points"] for r in rows])
     kept = np.array([r["mask_kept"] for r in rows])
@@ -917,44 +886,31 @@ def main():
     isos = np.array([r["iso_mm"] for r in rows])
     print("\n" + "=" * 76)
     print(f"builder v{BUILDER_VERSION} | patients {done} | samples {len(rows)} "
-          f"({len(rows)/max(done, 1):.1f} vessels/patient)")
-    print(
-        f"T3 consistency   mean {allc.mean():.3f}  min {allc.min():.3f}   [render pose, tol {args.tol_px}px]")
-    print(
-        f"   under scanner mean {allcs.mean():.3f}  min {allcs.min():.3f}   [motion NOT compensated -- the task]")
-    print(
-        f"T2 DLT rms       fit mean {rmsf.mean():.2f}px | HELD-OUT mean {rmsv.mean():.2f}px  max {rmsv.max():.2f}px")
-    print(
-        f"T1 skel inside   min {min(r['skeleton_inside'] for r in rows):.4f}")
-    cov = np.array([r["coverage_render"] for r in rows] +
-                   [r["coverage_scanner"] for r in rows])
+          f"({len(rows)/max(done,1):.1f} vessels/patient)")
+    print(f"T3 consistency   mean {allc.mean():.3f}  min {allc.min():.3f}   [render pose, tol {args.tol_px}px]")
+    print(f"   under scanner mean {allcs.mean():.3f}  min {allcs.min():.3f}   [motion NOT compensated -- the task]")
+    print(f"T2 DLT rms       fit mean {rmsf.mean():.2f}px | HELD-OUT mean {rmsv.mean():.2f}px  max {rmsv.max():.2f}px")
+    print(f"T1 skel inside   min {min(r['skeleton_inside'] for r in rows):.4f}")
+    cov = np.array([r["coverage_render"] for r in rows] + [r["coverage_scanner"] for r in rows])
     nclip = sum(1 for r in rows if r["clipped_views"])
-    print(
-        f"on-detector      mean {ond.mean():.4f}  min {ond.min():.4f}  (per view, gate {args.min_on_detector})")
-    print(
-        f"union coverage   mean {cov.mean():.4f}  min {cov.min():.4f}  (>=1 view; gate {args.min_coverage})")
+    print(f"on-detector      mean {ond.mean():.4f}  min {ond.min():.4f}  (per view, gate {args.min_on_detector})")
+    print(f"union coverage   mean {cov.mean():.4f}  min {cov.min():.4f}  (>=1 view; gate {args.min_coverage})")
     print(f"silhouette clip  {nclip}/{len(rows)} kept samples touch a detector border "
           f"({'REJECTING' if args.reject_clipped else 'diagnostic only'})")
     print(f"ordering adj     mean {adjall.mean():.3f}  min {adjall.min():.3f}")
-    print(
-        f"radius sane      {sum(r['radius_ok'] for r in rows)}/{len(rows)} samples")
-    print(
-        f"points/vessel    mean {npts.mean():.0f}  max {npts.max()}  (max_points {args.max_points})")
-    print(
-        f"mask kept        mean {kept.mean():.3f}  min {kept.min():.3f}  (gate {args.min_mask_kept})")
+    print(f"radius sane      {sum(r['radius_ok'] for r in rows)}/{len(rows)} samples")
+    print(f"points/vessel    mean {npts.mean():.0f}  max {npts.max()}  (max_points {args.max_points})")
+    print(f"mask kept        mean {kept.mean():.3f}  min {kept.min():.3f}  (gate {args.min_mask_kept})")
     print(f"iso grid         {isos.min():.3f}-{isos.max():.3f} mm | max voxels "
           f"{max(r['iso_voxels'] for r in rows):,}")
     n_down = sum(1 for r in rows if r["downsampled_axes"])
     print(f"downsampled axes {n_down}/{len(rows)} samples "
           f"{'(EXPECT 0 with --iso auto)' if n_down else 'OK'}")
-    print(
-        f"skeleton comps   all == 1: {all(r['n_skel_components'] == 1 for r in rows)}")
+    print(f"skeleton comps   all == 1: {all(r['n_skel_components'] == 1 for r in rows)}")
 
     # ---- P2-n: motion is a DIAGNOSTIC, reported not silently filtered ----
-    corr = float(np.corrcoef(mag, dm)[0, 1]) if len(
-        rows) > 2 and mag.std() > 0 else float("nan")
-    print(
-        f"motion effect    mean {dm.mean():+.3f}  min {dm.min():+.3f}  max {dm.max():+.3f}")
+    corr = float(np.corrcoef(mag, dm)[0, 1]) if len(rows) > 2 and mag.std() > 0 else float("nan")
+    print(f"motion effect    mean {dm.mean():+.3f}  min {dm.min():+.3f}  max {dm.max():+.3f}")
     print(f"   |t| vs effect corr {corr:+.2f}   (expect clearly positive; "
           f"low-motion draws SHOULD show little effect)")
     if n_comp_hist:
@@ -964,8 +920,7 @@ def main():
     for s, why in failures:
         print(f"  FAILURE {s}: {why}")
     per = float(np.mean(times))
-    print(
-        f"per-patient {per:.1f}s  ->  ETA 1000 patients: {per*1000/3600:.1f} h")
+    print(f"per-patient {per:.1f}s  ->  ETA 1000 patients: {per*1000/3600:.1f} h")
 
     n_attempt = len(rows) + len(rejected)
     reject_frac = len(rejected) / max(n_attempt, 1)
