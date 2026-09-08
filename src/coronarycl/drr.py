@@ -1,10 +1,8 @@
 """Step 1.2 -- DRR generation: 2 views, correct camera geometry + motion sim.
-Requires a CUDA GPU (TIGRE's cone-beam projection) -- does NOT run on
-Apple Silicon (M4) locally. Run on Kaggle Notebooks (GPU P100).
-
+Requires a CUDA GPU (TIGRE's cone-beam projection)
 Pipeline history (see docs/work_breakdown.md Step 1.2 for full narrative):
 
-1. Projection tool: TIGRE, not DeepDRR. TIGRE performs a direct
+1. Projection tool: TIGRE. TIGRE performs a direct
    HU-derived linear-attenuation-coefficient line integral (Beer-Lambert),
    with no material-classification step -- this avoids DeepDRR's 3-class
    (air/soft tissue/bone) decomposition, which was found to flatten
