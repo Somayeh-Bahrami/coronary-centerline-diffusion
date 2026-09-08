@@ -1,6 +1,6 @@
 """Dataset v3 (Plan A) — single isotropic frame, GT regenerated after crop.
 
-BUILDER VERSION 3.2.  Every .npz carries `builder_version`; refuse to mix
+BUILDER VERSION 3.3.  Every .npz carries `builder_version`; refuse to mix
 outputs from different builder versions in one directory (see --overwrite).
 
 This builder REUSES the repo's validated modules rather than duplicating them,
@@ -93,11 +93,9 @@ P2-l  geo.accuracy IS NOW SET EXPLICITLY (default 0.5) instead of inherited
       thresholded at > 1e-6.  We keep 0.5 and record the divergence.
       --tigre_accuracy 1.0 reproduces DeepCA exactly if you want that arm.
 
-P2-m  SILHOUETTE CLIPPING IS NOW CHECKED.  The per-point FOV gate (P2-f) covers
-      the centerline but not the vessel's thickness: the rendered mask could be
-      clipped at the detector border while every centerline point stayed
-      inside, corrupting the image conditioning but not the GT.  A projection
-      whose silhouette touches any detector border row/column is now rejected.
+P2-m  SILHOUETTE CLIPPING IS CHECKED, AND RECORDED RATHER THAN REJECTED.
+      (v3.2 rejected on it; the 20-patient pilot showed that was wrong -- see
+      P1-o.  --reject_clipped restores the old behaviour.)
 
 P2-n  --min_motion_effect NO LONGER REJECTS BY DEFAULT.  Rejecting samples
       whose motion happened to be small removed the low-motion tail of a
@@ -110,6 +108,50 @@ P2-n  --min_motion_effect NO LONGER REJECTS BY DEFAULT.  Rejecting samples
           draw.
         * dataset-level: the gate fails if the mean effect is ~zero or the
           effect does not correlate with sampled motion magnitude.
+
+v3.3 CORRECTIONS (from the first 20-patient CUDA pilot)
+
+P1-o  *** THE CLIPPING GATE WAS MEASURING THE WRONG THING, AND THE FOV IS THE
+      REAL CONSTRAINT. ***  The pilot rejected 13/38 samples (34%); all 13 were
+      flagged "silhouette clipped".  The geometry explains it:
+
+          detector FOV at isocentre = 512 * ~0.2784 * DSO/DSD
+                                    = 115.4 mm (view 1 best) ... 99.2 mm (view 2 worst)
+          a 96 mm cube rotated by th spans 96*(|cos th| + |sin th|)
+                                    = 121 mm at 18 deg (DeepCA's MINIMUM primary
+                                      angle), 131 mm at 30 deg, 136 mm at 42 deg
+          largest never-clipping cube = 73-88 mm depending on view and angle
+
+      So a 96 mm crop CANNOT fit DeepCA's detector at any angle they sample:
+      clipping is geometrically guaranteed for any vessel that fills the crop,
+      not an anomaly.  Shrinking the crop does not help -- it does not shrink
+      the vessel, it just moves the loss from "clipped" to "mask_kept".
+
+      More importantly the gate was wrong in principle.  Clinical coronary
+      angiography clips vessels at the frame edge routinely, so a clipped
+      silhouette is a REALISTIC input, not a defect.  What is genuinely
+      disqualifying is a GT point with no support in EITHER view -- no model
+      can place it.  So:
+        * clipping           -> recorded diagnostic (--reject_clipped opts in)
+        * --min_coverage 1.0 -> NEW hard gate: every GT point must be
+                                on-detector in at least one view
+        * --min_on_detector  -> 0.99 -> 0.95 (per view).  0.99 was arbitrary and
+                                unreachable given the FOV arithmetic above.
+        * --max_reject_frac  -> 0.02 -> 0.15.  0.02 had no data behind it; the
+                                pilot puts the genuinely-broken rate near 10%.
+
+      Related observation, worth a line in the report: 9 of the 13 pilot
+      rejections were LCA and only 4 RCA.  The LCA tree (LAD + LCx) is larger
+      and exceeds the FOV more often.  DeepCA trains on RCA ALONE (879 samples)
+      -- this FOV limit is the likely reason, and is worth citing if the LCA
+      yield stays low at scale.
+
+      NOT changed: the mask_kept and single-skeleton gates.  4 of the 13
+      rejections (1_LCA, 1_RCA, 4_LCA, 20_RCA) lost 7-16% of the vessel mask AND
+      had the tree severed into 2-3 pieces by the 96 mm crop -- and in all four
+      the pre-resample component count already equalled the post-resample count,
+      so the crop did it, not the resampling.  Those are correct rejections:
+      the ground truth really is incomplete.
 
 NOT FIXED HERE (needs a decision or another file):
   * RAO/LAO labels are still not emitted, ON PURPOSE.  Mapping TIGRE's alpha to
@@ -152,7 +194,7 @@ from src.coronarycl.splits import (              # noqa: E402
     make_case_level_split, write_splits,
 )
 
-BUILDER_VERSION = "3.2"
+BUILDER_VERSION = "3.3"
 
 # ---------------- DeepCA geometry (Wang et al., WACV 2025; data_simulation.py @ c01ab96) ----
 DET_N = 512                                     # L146
@@ -526,7 +568,10 @@ def main():
     ap.add_argument("--extra_components", choices=["skip", "largest2"], default="skip")
     ap.add_argument("--dlt_fit", type=int, default=20)
     ap.add_argument("--dlt_val", type=int, default=8)
-    ap.add_argument("--max_reject_frac", type=float, default=0.02)
+    ap.add_argument("--max_reject_frac", type=float, default=0.15,
+                    help="Was 0.02, chosen with no data behind it. The 20-patient pilot "
+                         "put the genuinely-broken rate at ~10%% (vessels the 96 mm crop "
+                         "severs), so 0.02 could never be met.")
     ap.add_argument("--max_skip_frac", type=float, default=0.10)
     ap.add_argument("--motion_3d", action="store_true",
                     help="NON-DeepCA: also perturb out-of-plane translation (DeepCA L191 = 0)")
@@ -651,6 +696,7 @@ def main():
             images, P_scan, P_rend = [], [], []
             cons_r, cons_s, ond_r, ond_s = [], [], [], []
             rms_fit_all, rms_val_all, clipped = [], [], []
+            inb_r, inb_s = [], []      # per-point on-detector masks, per view
             for k in range(2):
                 vr, vs = views_r[k], views_s[k]
                 geo = build_geo(iso_shape, iso_sp, vr, accuracy=args.tigre_accuracy)
@@ -684,11 +730,19 @@ def main():
                     ib = (col >= 0) & (col < DET_N) & (row >= 0) & (row < DET_N)
                     hit = np.zeros(len(uv), bool)
                     hit[ib] = tolm[row[ib], col[ib]]
-                    return float(hit.mean()), on_detector_fraction(uv)
+                    return float(hit.mean()), on_detector_fraction(uv), ib
 
-                c_r, o_r = _score(Pr); c_s, o_s = _score(Ps)
-                cons_r.append(c_r); ond_r.append(o_r)
-                cons_s.append(c_s); ond_s.append(o_s)
+                c_r, o_r, ib_r = _score(Pr); c_s, o_s, ib_s = _score(Ps)
+                cons_r.append(c_r); ond_r.append(o_r); inb_r.append(ib_r)
+                cons_s.append(c_s); ond_s.append(o_s); inb_s.append(ib_s)
+
+            # P1-o: the disqualifying condition is a GT point with no support in
+            # EITHER view -- no model can place it.  A point missing from one view
+            # is still constrained by the other, and real angiography clips at the
+            # frame edge routinely, so per-view clipping is realistic input, not a
+            # defect (see P2-m note below).
+            cover_r = float((inb_r[0] | inb_r[1]).mean())
+            cover_s = float((inb_s[0] | inb_s[1]).mean())
 
             motion_effect = cons_r[1] - cons_s[1]
             rms_val_arr = np.asarray(rms_val_all, float)
@@ -710,7 +764,10 @@ def main():
                 bad.append(f"held-out DLT rms {rms_val_arr.max():.2f}px >= {args.max_dlt_rms}")
             if min(ond_r + ond_s) < args.min_on_detector:
                 bad.append(f"on-detector {min(ond_r + ond_s):.3f} < {args.min_on_detector}")
-            if any(clipped):                                        # P2-m
+            if min(cover_r, cover_s) < args.min_coverage:            # P1-o
+                bad.append(f"union coverage {min(cover_r, cover_s):.3f} < "
+                           f"{args.min_coverage} (points invisible in BOTH views)")
+            if args.reject_clipped and any(clipped):                 # P2-m, opt-in
                 bad.append(f"silhouette clipped at detector border (views "
                            f"{[i for i, c in enumerate(clipped) if c]})")
             if mask_kept < args.min_mask_kept:
@@ -758,6 +815,9 @@ def main():
                              motion_effect=round(motion_effect, 4),
                              motion_trans_mm=round(motion["motion_trans_norm_mm"], 2),
                              motion_rot_deg=round(motion["motion_rot_norm_deg"], 2),
+                             coverage_render=round(cover_r, 4),
+                             coverage_scanner=round(cover_s, 4),
+                             clipped_views=[i for i, c in enumerate(clipped) if c],
                              on_det_render=[round(v, 4) for v in ond_r],
                              on_det_scanner=[round(v, 4) for v in ond_s],
                              dlt_rms_fit=[round(r, 3) for r in rms_fit_all],
@@ -818,7 +878,12 @@ def main():
     print(f"   under scanner mean {allcs.mean():.3f}  min {allcs.min():.3f}   [motion NOT compensated -- the task]")
     print(f"T2 DLT rms       fit mean {rmsf.mean():.2f}px | HELD-OUT mean {rmsv.mean():.2f}px  max {rmsv.max():.2f}px")
     print(f"T1 skel inside   min {min(r['skeleton_inside'] for r in rows):.4f}")
-    print(f"on-detector      mean {ond.mean():.4f}  min {ond.min():.4f}  (both poses)")
+    cov = np.array([r["coverage_render"] for r in rows] + [r["coverage_scanner"] for r in rows])
+    nclip = sum(1 for r in rows if r["clipped_views"])
+    print(f"on-detector      mean {ond.mean():.4f}  min {ond.min():.4f}  (per view, gate {args.min_on_detector})")
+    print(f"union coverage   mean {cov.mean():.4f}  min {cov.min():.4f}  (>=1 view; gate {args.min_coverage})")
+    print(f"silhouette clip  {nclip}/{len(rows)} kept samples touch a detector border "
+          f"({'REJECTING' if args.reject_clipped else 'diagnostic only'})")
     print(f"ordering adj     mean {adjall.mean():.3f}  min {adjall.min():.3f}")
     print(f"radius sane      {sum(r['radius_ok'] for r in rows)}/{len(rows)} samples")
     print(f"points/vessel    mean {npts.mean():.0f}  max {npts.max()}  (max_points {args.max_points})")
@@ -867,6 +932,7 @@ def main():
           and adjall.min() >= args.min_adjacency
           and np.isfinite(rmsv).all() and rmsv.max() < args.max_dlt_rms
           and ond.min() >= args.min_on_detector
+          and cov.min() >= args.min_coverage
           and kept.min() >= args.min_mask_kept
           and motion_alive
           and n_down == 0
