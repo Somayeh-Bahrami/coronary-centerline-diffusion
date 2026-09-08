@@ -41,7 +41,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from .config import resolve_device
-from .dataset import CoronaryCenterlineDataset
+from .dataset_v3_1 import CoronaryCenterlineDatasetV31, list_samples
 from .models.diffusion import CenterlineDenoiser
 
 EVAL_TIMESTEPS = [0, 250, 500, 750, 999]
@@ -177,17 +177,22 @@ def train(config: dict, quick_test: bool = False):
 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    packaged_dir = data_cfg.get("packaged_dir", "data/processed/packaged")
-    splits_dir = Path(data_cfg.get("splits_dir", "data/splits"))
-    import json
-    with open(splits_dir / "case_splits.json") as f:
-        splits = json.load(f)
+    # Dataset v3.2: one sample per coronary system (<patient>_LCA / <patient>_RCA).
+    # The split lives inside each .npz, so there is no split file to read here --
+    # that also removes the chance of pairing samples with a stale case_splits.json.
+    packaged_dir = data_cfg.get("packaged_dir", "dataset_v3_1")
 
-    train_ids = splits["train"][:20] if quick_test else splits["train"]
-    val_ids = splits["val"][:4] if quick_test else splits["val"]
+    train_ids = list_samples(packaged_dir, "train")
+    val_ids = list_samples(packaged_dir, "val")
+    if quick_test:
+        train_ids, val_ids = train_ids[:20], val_ids[:4]
 
-    train_dataset = CoronaryCenterlineDataset(packaged_dir, train_ids)
-    val_dataset = CoronaryCenterlineDataset(packaged_dir, val_ids)
+    # return_render_poses=False: poses_render carries the simulated motion and
+    # must never reach the model -- it would make motion compensation trivial.
+    train_dataset = CoronaryCenterlineDatasetV31(
+        packaged_dir, sample_ids=train_ids, return_render_poses=False)
+    val_dataset = CoronaryCenterlineDatasetV31(
+        packaged_dir, sample_ids=val_ids, return_render_poses=False)
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
     val_loader = DataLoader(
