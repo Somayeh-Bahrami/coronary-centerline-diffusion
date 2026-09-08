@@ -17,7 +17,7 @@ GPU (Kaggle Notebooks, GPU P100).
 
 **How I plan to do it:** Runs fully on my M4 locally, CPU-only, no GPU needed. scikit-image skeletonize_3d + radius estimation via distance transform.
 
-**Repo:** Implemented in `src/coronarycl/centerline.py`, driven by `prepare_centerlines.py`.
+**Repo:** Implemented in `src/coronarycl/centerline.py`. Originally driven by a standalone `prepare_centerlines.py`; since dataset v3 the ordering/topology helpers (`_traversal_order`, `_classify_topology`) are called directly by `build_dataset_v3.py`, so the centerline is regenerated *after* the crop on the same isotropic grid as the projections. The standalone script has been removed.
 
 ### 1.2 DRR generation: 2 views, correct camera geometry + motion simulation [MEDIUM] [Deps: NONE] — DONE (July 18-21)
 - Generate synthetic 2D X-ray projections via TIGRE (Biguri et al., 2016), which performs a direct Beer-Lambert line integral over the Hounsfield-derived attenuation-coefficient volume with no material-classification step. This replaces an earlier DeepDRR-based approach (Unberath et al., 2018): DeepDRR's three-class material decomposition (air/soft tissue/bone) was found to absorb contrast-enhanced vessel voxels into the generic soft-tissue class, yielding only weak vessel-vs-background contrast (effect size 0.35, confirmed quantitatively) even after display enhancement. TIGRE avoids this failure mode by construction and matches DeepCA's own toolchain.
@@ -29,7 +29,7 @@ GPU (Kaggle Notebooks, GPU P100).
 
 **How I plan to do it:** TIGRE requires building from source (`git clone` + `pip install .`, no pip package available) — confirmed working on Kaggle (GPU P100). Full generation completed across all 5 batches; projections + pose arrays downloaded to laptop for everything downstream.
 
-**Repo:** Implemented in `src/coronarycl/drr.py`, driven by Kaggle notebook cells (no longer Colab-based).
+**Repo:** ~~`src/coronarycl/drr.py`~~ — **REMOVED (superseded by dataset v3).** The projection step now lives in `build_dataset_v3.py`, which projects the *same* isotropic volume it skeletonizes. `drr.py` projected the native-resolution volume in a separate coordinate frame from the centerline GT, which is what produced the v1/v2 projection-consistency failures. The findings recorded in this step (TIGRE over DeepDRR, non-subtracted projections, empirical DLT calibration) all carry forward; only the implementation was replaced. See the v3.1/v3.2 correction log in `build_dataset_v3.py` for what changed since.
 
 ### 1.3 Dataset verification & train/val/test split [SMALL] [Deps: 1.1, 1.2] — DONE
 - ID consistency check: confirmed all 1000 cases have both a centerline and a DRR projection set, with zero cases missing on either side.
@@ -37,7 +37,7 @@ GPU (Kaggle Notebooks, GPU P100).
 - Case-level split (never split by view, so no single case's projections appear in more than one split) to avoid data leakage.
 - Training set size (960 of 1000 cases) follows 3DGR-CAR's (MICCAI 2024) split on the same ImageCAS dataset; the remaining 40 cases are divided evenly between validation and test (20/20), a reasonable default (not specified by the paper itself).
 
-**DoD:** Fixed train/val/test case-ID lists saved (960/20/20).
+**DoD:** Fixed train/val/test case-ID lists saved. Originally 960/20/20 case-level; dataset v3 uses an 80/10/10 **patient**-level split (both coronary systems of a patient share a split), written to `case_splits_v3.json` beside the samples.
 
 **How I plan to do it:** Runs fully on my M4 locally, no GPU needed.
 
