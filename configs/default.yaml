@@ -3,7 +3,7 @@
 data:
   raw_dir: data/raw
   centerline_dir: data/processed/centerlines
-  packaged_dir: data/processed/packaged_reordered   # <-- point at the new dataset
+  packaged_dir:  dataset_v3_1   # <-- point at the new dataset
   splits_dir: data/splits                           # <-- dir, not splits_file
 
 drr:
