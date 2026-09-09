@@ -620,6 +620,11 @@ def main():
     ap.add_argument("--min_lr_sep_mm", type=float, default=10.0)
     ap.add_argument("--single_component", choices=["skip", "keep"], default="skip")
     ap.add_argument("--extra_components", choices=["skip", "largest2"], default="skip")
+    ap.add_argument("--cal_n", type=int, default=64,
+                    help="P2-r: DLT calibration phantom resolution per axis. Marker size "
+                         "is sVoxel/cal_n, so a LARGER --crop_mm coarsens the markers and "
+                         "raises held-out rms (0.35px at 96mm -> 0.60px at 105mm). Raise "
+                         "to 96 if rms approaches the --max_dlt_rms gate; costs GPU time.")
     ap.add_argument("--dlt_fit", type=int, default=20)
     ap.add_argument("--dlt_val", type=int, default=8)
     ap.add_argument("--accept_yield", action="store_true",
@@ -769,13 +774,13 @@ def main():
 
                 Pr, fr, vr_rms = calibrate_P(iso_shape, iso_sp, vr, n_fit=args.dlt_fit,
                                              n_val=args.dlt_val, seed=args.seed + 10 * k,
-                                             accuracy=args.tigre_accuracy)
+                                             accuracy=args.tigre_accuracy, cal_n=args.cal_n)
                 if k == 0:
                     Ps, fs, vs_rms = Pr, fr, vr_rms             # view 1 carries no motion
                 else:
                     Ps, fs, vs_rms = calibrate_P(iso_shape, iso_sp, vs, n_fit=args.dlt_fit,
                                                  n_val=args.dlt_val, seed=args.seed + 97,
-                                                 accuracy=args.tigre_accuracy)
+                                                 accuracy=args.tigre_accuracy, cal_n=args.cal_n)
                 P_rend.append(Pr); P_scan.append(Ps)
                 # P1-i: keep EVERY value flat. Never collapse with max() -- that
                 # silently drops a NaN whenever a finite value comes first.
