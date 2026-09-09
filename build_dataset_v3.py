@@ -1,6 +1,6 @@
 """Dataset v3 (Plan A) — single isotropic frame, GT regenerated after crop.
 
-BUILDER VERSION 3.3.  Every .npz carries `builder_version`; refuse to mix
+BUILDER VERSION 3.4.  Every .npz carries `builder_version`; refuse to mix
 outputs from different builder versions in one directory (see --overwrite).
 
 This builder REUSES the repo's validated modules rather than duplicating them,
@@ -153,6 +153,38 @@ P1-o  *** THE CLIPPING GATE WAS MEASURING THE WRONG THING, AND THE FOV IS THE
       so the crop did it, not the resampling.  Those are correct rejections:
       the ground truth really is incomplete.
 
+v3.4 CORRECTIONS (from the first 200-patient run: 88/388 rejected, 22.7%)
+
+P2-p  --min_adjacency NO LONGER REJECTS BY DEFAULT.  It was the SOLE reason for
+      19 of the 88 rejections.  Adjacency measures how often consecutive ORDERED
+      points are spatial neighbours -- but a DFS walk must jump every time it
+      backtracks to a branch point, so adjacency FALLS as a tree gets more
+      branched.  Rejecting on it therefore discards the most branched (most
+      clinically interesting) trees, which is a dataset bias rather than a data
+      defect: the GT is valid, it is merely harder to serialise.  If ordering
+      quality hurts the model, the fix is a better ordering algorithm or an
+      architecture that does not assume sequential adjacency -- not deleting the
+      hard cases.  --reject_low_adjacency restores the old behaviour.
+      (Same class of error as P2-n; worth checking any future gate for it.)
+
+P2-q  THE GATE IS SPLIT INTO INTEGRITY vs YIELD, and the reject reasons are now
+      tallied by category so the breakdown never has to be counted by hand.
+        INTEGRITY  things that can only be wrong if the BUILDER is wrong (DLT
+                   rms, downsampling, skeleton connectivity, union coverage,
+                   radius sanity, motion wiring, hard failures).  A failure here
+                   means do not train, full stop.
+        YIELD      how much real data the QC discarded.  Those rejections are
+                   individually justified -- incomplete GT, or vessels past
+                   DeepCA's detector FOV -- so the limit is a STEP-CHANGE
+                   DETECTOR, not a quality bar.
+      --max_reject_frac had already been raised twice (0.02 -> 0.15) against
+      pilot data; raising it a third time to obtain a green light would have
+      been meaningless.  Instead --accept_yield makes the decision explicit and
+      recorded.  Observed at 200 patients, with adjacency demoted: ~69/388
+      (17.8%), of which the dominant causes are the 96 mm crop severing vessels
+      (mask_kept + skeleton_split) and DeepCA's FOV (consistency + on_detector),
+      the latter hitting LCA roughly twice as often as RCA.
+
 NOT FIXED HERE (needs a decision or another file):
   * RAO/LAO labels are still not emitted, ON PURPOSE.  Mapping TIGRE's alpha to
     clinical RAO/LAO requires knowing TIGRE's rotation convention relative to
@@ -194,7 +226,7 @@ from src.coronarycl.splits import (              # noqa: E402
     make_case_level_split, write_splits,
 )
 
-BUILDER_VERSION = "3.3"
+BUILDER_VERSION = "3.4"
 
 # ---------------- DeepCA geometry (Wang et al., WACV 2025; data_simulation.py @ c01ab96) ----
 DET_N = 512                                     # L146
@@ -546,7 +578,16 @@ def main():
                          "DeepCA uses %.1f; we default to 0.5 -- see module docstring."
                          % DEEPCA_ACCURACY)
     ap.add_argument("--min_consistency", type=float, default=0.95)
-    ap.add_argument("--min_adjacency", type=float, default=0.95)
+    ap.add_argument("--min_adjacency", type=float, default=0.95,
+                    help="P2-p: ordering-adjacency threshold. DIAGNOSTIC by default; "
+                         "pass --reject_low_adjacency to make it reject.")
+    ap.add_argument("--reject_low_adjacency", action="store_true",
+                    help="P2-p: reject samples below --min_adjacency. OFF by default: "
+                         "a DFS walk must jump when it backtracks to a branch point, so "
+                         "adjacency FALLS as a tree gets more branched. Rejecting on it "
+                         "discards the most branched trees -- a dataset bias, not a data "
+                         "defect (the GT is valid, just harder to serialise). At 200 "
+                         "patients this was the SOLE reason for 19 of 88 rejections.")
     ap.add_argument("--min_mask_kept", type=float, default=0.95)
     ap.add_argument("--min_on_detector", type=float, default=0.95,
                     help="P2-f: minimum PER-VIEW fraction of centerline points inside "
@@ -581,6 +622,11 @@ def main():
     ap.add_argument("--extra_components", choices=["skip", "largest2"], default="skip")
     ap.add_argument("--dlt_fit", type=int, default=20)
     ap.add_argument("--dlt_val", type=int, default=8)
+    ap.add_argument("--accept_yield", action="store_true",
+                    help="P2-q: proceed when INTEGRITY passes but YIELD is over its "
+                         "limit -- an explicit, recorded 'I read the breakdown and this "
+                         "discard rate is acceptable'. Prefer this over raising "
+                         "--max_reject_frac, which hides the decision.")
     ap.add_argument("--max_reject_frac", type=float, default=0.15,
                     help="Was 0.02, chosen with no data behind it. The 20-patient pilot "
                          "put the genuinely-broken rate at ~10%% (vessels the 96 mm crop "
@@ -630,6 +676,8 @@ def main():
 
     rng = np.random.default_rng(args.seed)
     rows, times, failures, rejected, skipped, done = [], [], [], [], [], 0
+    import collections
+    reject_cat, reject_sole = collections.Counter(), collections.Counter()
     n_comp_hist = []
     for cid in all_ids:
         if done >= args.n:
@@ -766,7 +814,7 @@ def main():
             bad = []
             if min(cons_r) < args.min_consistency:
                 bad.append(f"consistency {min(cons_r):.3f} < {args.min_consistency}")
-            if adj < args.min_adjacency:
+            if args.reject_low_adjacency and adj < args.min_adjacency:   # P2-p
                 bad.append(f"adjacency {adj:.3f} < {args.min_adjacency}")
             if not r_ok:
                 bad.append("radius non-finite or <= 0")
@@ -798,6 +846,20 @@ def main():
                            f"despite |t|={motion['motion_trans_norm_mm']:.1f}mm "
                            f"|r|={motion['motion_rot_norm_deg']:.1f}deg (wiring bug)")
             if bad:
+                for _b in bad:                                   # P2-q: category tally
+                    key = ("mask_kept" if "mask_kept" in _b else
+                           "skeleton_split" if "skeleton has" in _b else
+                           "adjacency" if "adjacency" in _b else
+                           "union_coverage" if "union coverage" in _b else
+                           "on_detector" if "on-detector" in _b else
+                           "consistency" if "consistency" in _b else
+                           "dlt_rms" if "DLT rms" in _b else
+                           "grid_too_large" if "voxels" in _b else
+                           "motion_wiring" if "motion effect" in _b else
+                           "clipped" if "clipped" in _b else "other")
+                    reject_cat[key] += 1
+                    if len(bad) == 1:
+                        reject_sole[key] += 1
                 rejected.append((sid, "; ".join(bad)))
                 print(f"{sid:>12} [{split_of[cid]:>5}]: REJECTED -- {'; '.join(bad)}", flush=True)
                 continue
@@ -937,27 +999,58 @@ def main():
     # Every SAVED sample already passed per-sample QC, so these minima are
     # guarantees. The gate checks the aggregate story: too much thrown away, or
     # motion that is not reaching the render at all.
+    if reject_cat:
+        print("\nrejection breakdown (reasons overlap; 'sole' = only reason):")
+        for k, v in reject_cat.most_common():
+            print(f"    {k:16s} {v:4d}   sole {reject_sole[k]:4d}")
+        nl = sum(1 for s_, _ in rejected if "_LCA" in s_)
+        print(f"    by vessel: LCA {nl}  RCA {len(rejected)-nl}"
+              "   (a persistent LCA excess is the DeepCA FOV limit, not a bug)")
+
+    # P2-q: the gate is split in two.
+    #   INTEGRITY = things that can only be wrong if the BUILDER is wrong.
+    #   YIELD     = how much real data the QC threw away.  Those rejections are
+    #               individually justified (incomplete GT, vessels past the
+    #               detector FOV), so this limit is a STEP-CHANGE DETECTOR, not a
+    #               quality bar; raising it to chase a green light is meaningless.
     motion_alive = bool(dm.mean() >= args.min_motion_effect
                         and (np.isnan(corr) or corr > 0.0))
-    ok = (reject_frac <= args.max_reject_frac
-          and skip_frac <= args.max_skip_frac
-          and allc.min() >= args.min_consistency
-          and adjall.min() >= args.min_adjacency
-          and np.isfinite(rmsv).all() and rmsv.max() < args.max_dlt_rms
-          and ond.min() >= args.min_on_detector
-          and cov.min() >= args.min_coverage
-          and kept.min() >= args.min_mask_kept
-          and motion_alive
-          and n_down == 0
-          and all(r["radius_ok"] for r in rows)
-          and not failures)
+    integrity = {
+        "held-out DLT rms finite and < %.2f px" % args.max_dlt_rms:
+            bool(np.isfinite(rmsv).all() and rmsv.max() < args.max_dlt_rms),
+        "no sample was downsampled":          n_down == 0,
+        "every skeleton is one component":    all(r["n_skel_components"] == 1 for r in rows),
+        "every GT point visible in >=1 view": bool(cov.min() >= args.min_coverage),
+        "all radii finite and > 0":           all(r["radius_ok"] for r in rows),
+        "motion reaches the render":          motion_alive,
+        "no hard build failures":             not failures,
+    }
+    yield_ok = {
+        "rejected <= %.0f%%" % (100*args.max_reject_frac): reject_frac <= args.max_reject_frac,
+        "skipped  <= %.0f%%" % (100*args.max_skip_frac):   skip_frac <= args.max_skip_frac,
+    }
+    print("\nINTEGRITY (a failure here means the builder is wrong):")
+    for k, v in integrity.items():
+        print(f"    [{'PASS' if v else 'FAIL'}] {k}")
+    print("YIELD (how much real data the QC discarded):")
+    for k, v in yield_ok.items():
+        print(f"    [{'PASS' if v else 'over'}] {k}")
+    ok = all(integrity.values()) and (all(yield_ok.values()) or args.accept_yield)
     if not motion_alive:
         print("  GATE NOTE: motion effect is ~zero across the whole build -- "
               "the render is probably not receiving the perturbation.")
     json.dump(rows, open(out / "pilot_report_v3.json", "w"), indent=2)
     print("saved pilot_report_v3.json + case_splits_v3.json + norm_stats_v3.json + per-sample npz")
-    print(("GATE PASSED — dataset v%s validated." % BUILDER_VERSION) if ok else
-          "GATE FAILED — inspect the failing metric above; do not train.")
+    if all(integrity.values()) and not all(yield_ok.values()) and args.accept_yield:
+        print("\nGATE PASSED with --accept_yield: integrity clean, yield over limit and\n"
+              "explicitly accepted by the operator. The discard rate is recorded above.")
+    elif all(integrity.values()) and not all(yield_ok.values()):
+        print("\nGATE FAILED on YIELD ONLY — every integrity check passed, so the data\n"
+              "that WAS written is sound. Read the breakdown above and decide whether the\n"
+              "discarded fraction is acceptable; do not simply raise the limit.")
+    else:
+        print(("GATE PASSED — dataset v%s validated." % BUILDER_VERSION) if ok else
+              "GATE FAILED on INTEGRITY — the builder is wrong; do not train.")
     print("=" * 76)
     if not ok:
         raise SystemExit(1)                                       # P2-k
