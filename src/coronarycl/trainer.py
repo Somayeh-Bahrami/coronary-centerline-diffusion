@@ -104,18 +104,49 @@ def compute_loss(model, scheduler, batch, device, fixed_t=None, cond_drop_prob=0
     return (per_point_loss * mask.float()).sum() / mask.float().sum()
 
 
+EVAL_SEED = 12345
+
+
 @torch.no_grad()
-def evaluate(model: CenterlineDenoiser, scheduler: NoiseScheduler,
-             val_loader: DataLoader, device: str) -> float:
-    """Deterministic, multi-timestep validation loss -- averages over
-    EVAL_TIMESTEPS instead of one random sample per batch, removing
-    most of the run-to-run measurement noise a naive validation loop
-    would otherwise show.
-    """
+def evaluate(
+    model: CenterlineDenoiser,
+    scheduler: NoiseScheduler,
+    val_loader: DataLoader,
+    device: str,
+) -> float:
+    """Validation with fixed timesteps and repeatable diffusion noise."""
+
+    was_training = model.training
     model.eval()
-    losses = [compute_loss(model, scheduler, b, device, fixed_t=t).item()
-              for b in val_loader for t in EVAL_TIMESTEPS]
-    model.train()
+
+    cuda_devices = (
+        [torch.cuda.current_device()]
+        if str(device).startswith("cuda")
+        else []
+    )
+
+    try:
+        # fork_rng restores the training RNG state after validation.
+        with torch.random.fork_rng(devices=cuda_devices):
+            torch.manual_seed(EVAL_SEED)
+
+            if cuda_devices:
+                torch.cuda.manual_seed_all(EVAL_SEED)
+
+            losses = [
+                compute_loss(
+                    model,
+                    scheduler,
+                    batch,
+                    device,
+                    fixed_t=timestep,
+                ).item()
+                for batch in val_loader
+                for timestep in EVAL_TIMESTEPS
+            ]
+    finally:
+        model.train(was_training)
+
     return sum(losses) / len(losses)
 
 
@@ -174,7 +205,7 @@ def train(config: dict, quick_test: bool = False):
         val_every = min(val_every, train_cfg.get("quick_val_every", 10))
         print(f"quick_test=True -- overriding to max_steps={max_steps}, "
               f"val_every={val_every}")
-        
+
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     # Dataset v3.2: one sample per coronary system (<patient>_LCA / <patient>_RCA).
@@ -257,7 +288,7 @@ def train(config: dict, quick_test: bool = False):
                 elapsed = time.time() - start_time
                 print(f"step {step}: train_loss={loss.item():.4f}, val_loss={val_loss:.4f}, "
                       f"elapsed={elapsed:.1f}s")
-                
+
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     steps_since_improvement = 0
