@@ -94,11 +94,11 @@ def compute_loss(model, scheduler, batch, device, fixed_t=None, cond_drop_prob=0
     x0_self = None
     if fixed_t is None and self_cond_p > 0.0 and torch.rand(1).item() < self_cond_p:
         with torch.no_grad():
-            eps1 = model(x_t, t, images, poses, x0_self=None)
+            eps1 = model(x_t, t, images, poses, x0_self=None, node_mask=mask)
             abar = scheduler.alpha_bars[t].view(-1, 1, 1)
             x0_self = ((x_t - torch.sqrt(1 - abar) * eps1) /
                        torch.sqrt(abar))[:, :, :3].detach()
-    pred_noise = model(x_t, t, images, poses, x0_self=x0_self)
+    pred_noise = model(x_t, t, images, poses, x0_self=x0_self, node_mask=mask,)
     per_point_loss = F.mse_loss(
         pred_noise, true_noise, reduction="none").mean(dim=-1)
     return (per_point_loss * mask.float()).sum() / mask.float().sum()
@@ -170,11 +170,11 @@ def train(config: dict, quick_test: bool = False):
     checkpoint_dir = Path(train_cfg.get("checkpoint_dir", "checkpoints"))
 
     if quick_test:
-        max_steps = min(max_steps, 20)
-        val_every = min(val_every, 10)
-        print(
-            f"quick_test=True -- overriding to max_steps={max_steps}, val_every={val_every}")
-
+        max_steps = min(max_steps, train_cfg.get("quick_steps", 20))
+        val_every = min(val_every, train_cfg.get("quick_val_every", 10))
+        print(f"quick_test=True -- overriding to max_steps={max_steps}, "
+              f"val_every={val_every}")
+        
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     # Dataset v3.2: one sample per coronary system (<patient>_LCA / <patient>_RCA).
@@ -208,7 +208,9 @@ def train(config: dict, quick_test: bool = False):
     # against losing GPU-hours to a session interruption mid-run.
     start_step = 0
     best_val_loss = float("inf")
+    steps_since_improvement = 0
     latest_path = checkpoint_dir / "latest.pt"
+
     if latest_path.exists():
         ckpt = torch.load(latest_path, map_location=device, weights_only=True)
         if ckpt.get("hidden_dim") != hidden_dim:
@@ -222,13 +224,15 @@ def train(config: dict, quick_test: bool = False):
         if "lr_scheduler" in ckpt:                                     # <-- new
             lr_scheduler.load_state_dict(ckpt["lr_scheduler"])
         start_step = ckpt["step"]
-        best_val_loss = ckpt.get("val_loss", float("inf"))
-        print(f"Resumed from step {start_step}, val_loss={best_val_loss:.4f}")
+        best_val_loss = ckpt.get(
+            "best_val_loss", ckpt.get("val_loss", float("inf")))
+        steps_since_improvement = ckpt.get("steps_since_improvement", 0)
+        print(
+            f"Resumed from step {start_step}, best_val_loss={best_val_loss:.4f}")
     else:
         print("No existing checkpoint found -- starting fresh.")
 
     train_losses, val_losses, val_steps = [], [], []
-    steps_since_improvement = 0
     step = start_step
     start_time = time.time()
 
@@ -253,17 +257,7 @@ def train(config: dict, quick_test: bool = False):
                 elapsed = time.time() - start_time
                 print(f"step {step}: train_loss={loss.item():.4f}, val_loss={val_loss:.4f}, "
                       f"elapsed={elapsed:.1f}s")
-
-                # hidden_dim is saved alongside the weights so a future
-                # evaluation script can verify it's instantiating the
-                # matching architecture before loading -- see module
-                # docstring for why this matters.
-                torch.save({
-                    "model": model.state_dict(), "optimizer": optimizer.state_dict(),
-                    "lr_scheduler": lr_scheduler.state_dict(),          # <-- new
-                    "step": step, "val_loss": val_loss, "hidden_dim": hidden_dim,
-                }, latest_path)
-
+                
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     steps_since_improvement = 0
@@ -279,6 +273,11 @@ def train(config: dict, quick_test: bool = False):
                               f"for {patience} checks.")
                         step = max_steps
                         break
+                torch.save({
+                    "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+                    "lr_scheduler": lr_scheduler.state_dict(),
+                    "step": step, "val_loss": val_loss, "hidden_dim": hidden_dim, "best_val_loss": best_val_loss,
+                    "steps_since_improvement": steps_since_improvement, }, latest_path)
 
                 if elapsed > max_hours * 3600:
                     print(f"\nHit {max_hours}h wall-clock limit at step {step} -- "
