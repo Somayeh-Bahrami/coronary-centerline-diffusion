@@ -4,9 +4,19 @@ This is the only measurement that answers whether Phase 1 worked. val_loss is
 single-step noise-prediction MSE; it says nothing about whether the reverse
 process produces a coherent centerline (see the trainer module docstring).
 
-Self-contained on purpose: it uses only NoiseScheduler, CenterlineDenoiser,
-dataset_v3_1 and eval_chamfer. It does NOT import sampling.py or evaluate.py,
-so it cannot be broken by, or break, whatever those contain.
+Metrics come from the repo's OWN src/coronarycl/metrics.py, deliberately, so
+every number here is directly comparable to the 22.78 mm classical baseline and
+to anything already reported. Note that convention:
+
+    chamfer_l2 = mean(d_pred->gt) + mean(d_gt->pred)      # a SUM, not an average
+
+which is 2x the "symmetric mean nearest-neighbour distance" convention used in
+much of the literature. That is fine internally, but if you ever compare against
+a published figure (DeepCA's, say), check which convention that paper used
+before putting the two numbers in the same table.
+
+Sampling is self-contained: it does NOT import sampling.py or evaluate.py, so it
+cannot be broken by, or break, whatever those contain.
 
 WHAT IS GIVEN TO THE MODEL AT GENERATION TIME
 ---------------------------------------------
@@ -42,11 +52,77 @@ import torch
 REPO = str(Path(__file__).resolve().parent)
 sys.path.insert(0, REPO)
 
-from eval_chamfer import evaluate as chamfer_evaluate, print_summary   # noqa: E402
+from scipy.spatial import cKDTree                                      # noqa: E402
+from src.coronarycl.metrics import chamfer_l2, overlap_metric          # noqa: E402
 from src.coronarycl.dataset_v3_1 import (                              # noqa: E402
     CoronaryCenterlineDatasetV31, list_samples)
 from src.coronarycl.models.diffusion import CenterlineDenoiser         # noqa: E402
 from src.coronarycl.trainer import NoiseScheduler                      # noqa: E402
+
+
+THRESH_KEYS = None          # set by score()
+
+
+def hausdorff95(pred, gt):
+    """95th-percentile symmetric distance, mm. Robust worst-case companion."""
+    d_pg, _ = cKDTree(gt).query(pred)
+    d_gp, _ = cKDTree(pred).query(gt)
+    return float(max(np.percentile(d_pg, 95), np.percentile(d_gp, 95)))
+
+
+def score(samples, thresholds=(1.0, 2.0, 5.0)):
+    """samples: (sample_id, vessel, pred_mm, gt_mm) with padding ALREADY removed.
+
+    Stratified by vessel because LCA and RCA differ in yield (82.2% vs 92.3%)
+    and in branching, so a pooled mean hides which system actually fails.
+    """
+    global THRESH_KEYS
+    THRESH_KEYS = [f"overlap@{d}mm" for d in thresholds]
+    rows = []
+    for sid, vessel, pred, gt in samples:
+        r = {"sample": sid, "vessel": vessel, "n_pred": len(pred), "n_gt": len(gt),
+             "chamfer_l2": chamfer_l2(pred, gt), "hd95_mm": hausdorff95(pred, gt)}
+        for d in thresholds:
+            r[f"overlap@{d}mm"] = overlap_metric(pred, gt, d)
+        rows.append(r)
+
+    keys = ["chamfer_l2", "hd95_mm"] + THRESH_KEYS
+    groups = {"all": rows}
+    for r in rows:
+        groups.setdefault(r["vessel"], []).append(r)
+
+    summary = {}
+    for name, rs in groups.items():
+        st = {"n": len(rs)}
+        for k in keys:
+            v = np.array([r[k] for r in rs], float)
+            v = v[np.isfinite(v)]
+            st[k] = float(v.mean()) if v.size else float("nan")
+            st[k + "_std"] = float(v.std()) if v.size else float("nan")
+        st["chamfer_median"] = float(np.median([r["chamfer_l2"] for r in rs]))
+        summary[name] = st
+    return rows, summary
+
+
+def print_summary(summary, baseline_mm=None, baseline_label="classical epipolar"):
+    order = [k for k in ("all", "LCA", "RCA") if k in summary]
+    w = max(len(k) for k in order) + 2
+    hdr = f"{'split':<{w}}{'n':>5}{'CD mm':>9}{'median':>9}{'HD95':>9}"
+    hdr += "".join(f"{k.replace('overlap@', 'Ot '):>10}" for k in THRESH_KEYS)
+    print(hdr); print("-" * len(hdr))
+    for k in order:
+        st = summary[k]
+        line = (f"{k:<{w}}{st['n']:>5}{st['chamfer_l2']:>9.2f}"
+                f"{st['chamfer_median']:>9.2f}{st['hd95_mm']:>9.2f}")
+        line += "".join(f"{st[o]:>10.3f}" for o in THRESH_KEYS)
+        print(line)
+    print("\nchamfer_l2 convention: mean(pred->gt) + mean(gt->pred)  [a SUM]"
+          "  -- src/coronarycl/metrics.py:36")
+    if baseline_mm is not None:
+        cd = summary["all"]["chamfer_l2"]
+        print(f"{'BEATS' if cd < baseline_mm else 'does NOT beat'} the {baseline_label} "
+              f"baseline ({cd:.2f} vs {baseline_mm:.2f} mm) -- same convention, "
+              f"both from metrics.py.")
 
 
 def parse_args():
@@ -159,8 +235,7 @@ def main():
                 preds_out[it["sample"]] = np.stack([p_mm, gt_mm])
         print(f"  {len(samples):>4}/{len(ids)} sampled", flush=True)
 
-    rows, summary = chamfer_evaluate(
-        samples, thresholds=(1.0, 2.0, 5.0))            # matches configs eval:
+    rows, summary = score(samples, thresholds=(1.0, 2.0, 5.0))   # matches configs eval:
     print()
     print_summary(summary, baseline_mm=22.78)
 
