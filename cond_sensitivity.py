@@ -67,29 +67,50 @@ print(f"  {len(ds)} val samples, {EVAL_TIMESTEPS} timesteps")
 
 
 @torch.no_grad()
-def sweep(shuffle_images: bool) -> float:
-    torch.manual_seed(SEED)                 # identical noise in both passes
+def sweep(shuffle_images: bool, timesteps):
+    """Mean loss per timestep. Seeded identically for both conditions, so the
+    diffusion noise and batch order are the same and the only difference is
+    which projections the denoiser saw."""
+    torch.manual_seed(SEED)
     if dev == "cuda":
         torch.cuda.manual_seed_all(SEED)
-    losses = []
+    acc = {t: [] for t in timesteps}
     for b in loader:
         if shuffle_images:
             if b["images"].shape[0] < 2:
                 continue                    # a size-1 batch cannot be shuffled
             b = dict(b)
             b["images"] = torch.roll(b["images"], shifts=1, dims=0)
-        for t in EVAL_TIMESTEPS:
-            losses.append(compute_loss(model, sched, b, dev, fixed_t=t).item())
-    return sum(losses) / len(losses)
+        for t in timesteps:
+            acc[t].append(compute_loss(model, sched, b, dev, fixed_t=t).item())
+    return {t: sum(v) / len(v) for t, v in acc.items()}
 
 
-matched = sweep(False)
-shuffled = sweep(True)
-sens = (shuffled - matched) / matched
+# A per-timestep breakdown, not just the average. At t~999 the target noise is
+# essentially unpredictable and at t~0 the input already IS x0, so at BOTH ends
+# the projections cannot help however healthy the model is. Averaging over all
+# five EVAL_TIMESTEPS therefore drags the headline number toward zero by
+# construction. The mid-range timesteps are where conditioning has to show up,
+# and they are the ones to read.
+TS = sorted(set(list(EVAL_TIMESTEPS) + [100, 200, 400, 600, 800]))
 
-print(f"\n  matched   {matched:.4f}")
-print(f"  shuffled  {shuffled:.4f}")
-print(f"  sensitivity  {sens:+.4f}  ({sens * 100:+.1f}%)")
-print("\n  ~0.00 => the model is ignoring the projections (conditioning collapse).")
-print("  Record this number alongside the run's Chamfer -- it is the single")
-print("  cheapest early warning that a checkpoint is not worth evaluating.")
+m = sweep(False, TS)
+s = sweep(True, TS)
+
+print(f"\n  {'t':>5}{'matched':>10}{'shuffled':>10}{'sensitivity':>14}")
+print("  " + "-" * 39)
+for t in TS:
+    d = (s[t] - m[t]) / m[t]
+    star = "  <-- mid-range" if 150 <= t <= 850 else ""
+    print(f"  {t:>5}{m[t]:>10.4f}{s[t]:>10.4f}{d * 100:>13.1f}%{star}")
+
+mid = [t for t in TS if 150 <= t <= 850]
+agg = (sum(s[t] for t in TS) - sum(m[t] for t in TS)) / sum(m[t] for t in TS)
+mid_sens = (sum(s[t] for t in mid) - sum(m[t] for t in mid)) / sum(m[t] for t in mid)
+print(f"\n  all timesteps   {agg * 100:+.1f}%")
+print(f"  mid-range only  {mid_sens * 100:+.1f}%   <- the number to read")
+print("\n  ~0% in the mid-range => the model is ignoring the projections")
+print("  (conditioning collapse). Near 0% at t=0 and t=999 is EXPECTED and")
+print("  says nothing either way. Record the mid-range figure next to the")
+print("  run's Chamfer; it is the cheapest early warning that a checkpoint")
+print("  is not worth evaluating -- but only Chamfer is the verdict.")
