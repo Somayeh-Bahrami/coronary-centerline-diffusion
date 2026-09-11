@@ -139,7 +139,45 @@ def parse_args():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default="ddim_results.json")
     p.add_argument("--save_pred", default="", help="optional .npz of predictions")
+    p.add_argument("--null_cond", action="store_true",
+                   help="CONTROL: sample with images and poses zeroed (the CFG null the "
+                        "model was trained with). Measures what the model produces from "
+                        "the learned prior alone. If this scores near the conditional "
+                        "run, the projections are not driving the reconstruction.")
+    p.add_argument("--mean_shape", action="store_true",
+                   help="CONTROL: ignore the model entirely; predict the per-vessel mean "
+                        "TRAIN centerline, arc-length resampled to each sample's n_points. "
+                        "This is the 'average coronary tree' predictor. A model that does "
+                        "not clearly beat it has learned the anatomical prior and no more.")
     return p.parse_args()
+
+
+def mean_shape_templates(data_dir, n_resample=256):
+    """Per-vessel mean TRAIN centerline, built in arc-length parameterisation.
+
+    Crude by design -- no inter-patient registration. The crop is bounding-box
+    centred, so centerlines are already roughly aligned, which is enough for a
+    control. Report it as 'mean training shape', not as a registered atlas.
+    """
+    from collections import defaultdict
+    acc = defaultdict(list)
+    for sid in list_samples(data_dir, "train"):
+        with np.load(Path(data_dir) / f"{sid}.npz", allow_pickle=True) as z:
+            cl = z["centerline"][z["centerline_mask"]][:, :3].astype(np.float64)
+            acc[str(z["vessel"])].append(resample_arclength(cl, n_resample))
+    return {v: np.mean(np.stack(a), axis=0) for v, a in acc.items()}
+
+
+def resample_arclength(pts, m):
+    """(n,3) ordered points -> (m,3), uniform in cumulative arc length."""
+    if len(pts) == 1:
+        return np.repeat(pts, m, axis=0)
+    seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    s = np.concatenate([[0.0], np.cumsum(seg)])
+    if s[-1] <= 0:
+        return np.repeat(pts[:1], m, axis=0)
+    target = np.linspace(0, s[-1], m)
+    return np.stack([np.interp(target, s, pts[:, k]) for k in range(3)], axis=1)
 
 
 @torch.no_grad()
@@ -188,6 +226,27 @@ def main():
     if dev == "cuda":
         torch.cuda.manual_seed_all(args.seed)
 
+    if args.mean_shape:
+        print("CONTROL: mean training shape -- the model is not used at all")
+        templates = mean_shape_templates(args.data)
+        ids_ms = list_samples(args.data, args.split)
+        if args.limit:
+            ids_ms = ids_ms[:args.limit]
+        samples_ms = []
+        for sid in ids_ms:
+            with np.load(Path(args.data) / f"{sid}.npz", allow_pickle=True) as z:
+                gt = z["centerline"][z["centerline_mask"]][:, :3].astype(np.float64)
+                ves = str(z["vessel"])
+            samples_ms.append((sid, ves, resample_arclength(templates[ves], len(gt)), gt))
+        rows_ms, summary_ms = score(samples_ms, thresholds=(1.0, 2.0, 5.0))
+        print()
+        print_summary(summary_ms, baseline_mm=22.78)
+        json.dump({"mode": "mean_shape_control", "split": args.split,
+                   "summary": summary_ms, "per_sample": rows_ms},
+                  open(args.out, "w"), indent=2)
+        print(f"\nwrote {args.out}")
+        return
+
     ck = torch.load(args.ckpt, map_location=dev, weights_only=True)
     print(f"checkpoint {args.ckpt}")
     print(f"  step {ck['step']}  val_loss {ck['val_loss']:.4f}  hidden_dim {ck['hidden_dim']}")
@@ -202,7 +261,8 @@ def main():
     ds = CoronaryCenterlineDatasetV31(args.data, sample_ids=ids,
                                       return_render_poses=False)   # normalised
     print(f"  {len(ids)} {args.split} samples | DDIM {args.steps} steps | "
-          f"guidance {args.guidance} | device {dev}\n")
+          f"guidance {args.guidance} | device {dev}"
+          + ("  | CONTROL: null conditioning" if args.null_cond else "") + "\n")
 
     # group by length so each batch pads to something close to its own max
     order = sorted(range(len(ids)), key=lambda i: int(np.load(
@@ -218,6 +278,9 @@ def main():
 
         images = torch.stack([it["images"][:, :, :] for it in items]).to(dev)
         poses = torch.stack([it["poses"] for it in items]).to(dev)
+        if args.null_cond:                      # CONTROL: prior-only sampling
+            images = torch.zeros_like(images)
+            poses = torch.zeros_like(poses)
         mask = torch.zeros(len(items), N, dtype=torch.bool, device=dev)
         for k, n in enumerate(npts):
             mask[k, :n] = True
@@ -243,6 +306,7 @@ def main():
                "split": args.split, "ddim_steps": args.steps,
                "guidance": args.guidance, "seed": args.seed,
                "n_points_source": "ground truth (topology given by design)",
+               "null_cond_control": bool(args.null_cond),
                "summary": summary, "per_sample": rows},
               open(args.out, "w"), indent=2)
     print(f"\nwrote {args.out}")

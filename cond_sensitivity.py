@@ -86,12 +86,22 @@ def sweep(shuffle_images: bool, timesteps):
     return {t: sum(v) / len(v) for t, v in acc.items()}
 
 
-# A per-timestep breakdown, not just the average. At t~999 the target noise is
-# essentially unpredictable and at t~0 the input already IS x0, so at BOTH ends
-# the projections cannot help however healthy the model is. Averaging over all
-# five EVAL_TIMESTEPS therefore drags the headline number toward zero by
-# construction. The mid-range timesteps are where conditioning has to show up,
-# and they are the ones to read.
+# A per-timestep breakdown, not just the average.
+#
+# In eps-prediction, x_t = sqrt(abar)*x0 + sqrt(1-abar)*eps:
+#   t -> 0    abar -> 1, so x_t ~ x0 and eps is almost invisible in the input.
+#             Recovering it is ill-posed, the loss is LARGE, and no amount of
+#             conditioning helps -- expect ~0% sensitivity here, and read
+#             nothing into it.
+#   t -> 999  abar -> ~4e-5, so x_t ~ eps and the target is nearly copyable
+#             from the input. The loss is TINY. Sensitivity there is measured
+#             on a vanishing base, but it still matters for sampling: DDIM
+#             computes x0 = (x_t - sqrt(1-abar)*eps)/sqrt(abar), dividing by
+#             sqrt(abar) ~ 0.0064, so it amplifies any eps error by ~156x.
+#
+# The plain average over EVAL_TIMESTEPS is dominated by the t=0 term, where the
+# metric is meaningless by construction, and so understates the model badly.
+# Read the per-timestep column. A healthy model shows sensitivity RISING with t.
 TS = sorted(set(list(EVAL_TIMESTEPS) + [100, 200, 400, 600, 800]))
 
 m = sweep(False, TS)
@@ -101,16 +111,16 @@ print(f"\n  {'t':>5}{'matched':>10}{'shuffled':>10}{'sensitivity':>14}")
 print("  " + "-" * 39)
 for t in TS:
     d = (s[t] - m[t]) / m[t]
-    star = "  <-- mid-range" if 150 <= t <= 850 else ""
+    star = "  <-- informative" if t >= 150 else "  (uninformative by construction)"
     print(f"  {t:>5}{m[t]:>10.4f}{s[t]:>10.4f}{d * 100:>13.1f}%{star}")
 
-mid = [t for t in TS if 150 <= t <= 850]
+mid = [t for t in TS if t >= 150]
 agg = (sum(s[t] for t in TS) - sum(m[t] for t in TS)) / sum(m[t] for t in TS)
 mid_sens = (sum(s[t] for t in mid) - sum(m[t] for t in mid)) / sum(m[t] for t in mid)
-print(f"\n  all timesteps   {agg * 100:+.1f}%")
-print(f"  mid-range only  {mid_sens * 100:+.1f}%   <- the number to read")
-print("\n  ~0% in the mid-range => the model is ignoring the projections")
-print("  (conditioning collapse). Near 0% at t=0 and t=999 is EXPECTED and")
-print("  says nothing either way. Record the mid-range figure next to the")
-print("  run's Chamfer; it is the cheapest early warning that a checkpoint")
-print("  is not worth evaluating -- but only Chamfer is the verdict.")
+print(f"\n  all timesteps    {agg * 100:+.1f}%   (dominated by t=0 -- do not quote this)")
+print(f"  t >= 150 only    {mid_sens * 100:+.1f}%   <- the summary figure")
+print("\n  Read the COLUMN, not just the summary. A healthy model shows")
+print("  sensitivity rising with t. Flat ~0% across all t means the model is")
+print("  ignoring the projections (the collapse that hit v2 and v3). ~0% at")
+print("  t=0 alone is expected and says nothing either way.")
+print("  This is a diagnostic, not a verdict -- only Chamfer is the verdict.")
