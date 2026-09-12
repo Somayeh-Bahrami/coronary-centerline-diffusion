@@ -29,6 +29,8 @@ from torch.utils.data import DataLoader, Sampler
 from .config import resolve_device
 from .dataset_v3_1 import CoronaryCenterlineDatasetV31, list_samples
 from .models.diffusion import CenterlineDenoiser
+from .edge_coherence import (EdgeCollate, edge_coherence_loss,
+                             load_edge_cache, x0_from_eps)
 
 EVAL_TIMESTEPS = [0, 250, 500, 750, 999]
 EVAL_SEED = 12345
@@ -185,6 +187,8 @@ def _dataset_fingerprint(packaged_dir, train_ids, val_ids):
 def compute_loss(
     model, scheduler, batch, device, fixed_t=None,
     cond_drop_prob=0.0, self_cond_p=0.5, return_parts=False,
+    coh_weight=0.0, coh_kwargs=None, return_coh=False,
+    detach_parts=True,
 ):
     """Masked epsilon-MSE; optionally return numerator and node count."""
     centerline = batch["centerline"].to(device, non_blocking=True)
@@ -234,7 +238,38 @@ def compute_loss(
     denominator = mask.sum(dtype=torch.float32).clamp_min(1.0)
     if return_parts:
         return numerator, denominator
-    return numerator / denominator
+    epsilon_loss = numerator / denominator
+
+    # Coherence is a TRAINING-only term. evaluate() always passes fixed_t,
+    # so the deterministic VAL loss keeps its previous definition and stays
+    # comparable with earlier runs and with the no-coherence control arm.
+    coherence_loss = torch.zeros((), device=device)
+    if coh_weight > 0.0 and fixed_t is None:
+        if batch.get('edge_index') is None:
+            # Never degrade silently to the epsilon-only objective: that
+            # would produce a run that LOOKS like the coherence arm and is
+            # actually the control.
+            raise RuntimeError(
+                'coh_weight > 0 but this batch carries no edge_index. The '
+                'train loader is missing its EdgeCollate collate_fn, or the '
+                'edge cache does not cover these samples.')
+        alpha_bar_t = scheduler.alpha_bars[timesteps]
+        x0_hat = x0_from_eps(noisy, predicted_noise, alpha_bar_t)
+        coherence_loss = edge_coherence_loss(
+            x0_hat, x0,
+            batch['edge_index'].to(device, non_blocking=True),
+            batch['edge_mask'].to(device, non_blocking=True),
+            alpha_bar_t, **(coh_kwargs or {}))
+        total_loss = epsilon_loss + coh_weight * coherence_loss
+    else:
+        total_loss = epsilon_loss
+
+    if return_coh:
+        if detach_parts:
+            return total_loss, epsilon_loss.detach(), coherence_loss.detach()
+        # graph-attached parts, for gradient_norm_ratio() only
+        return total_loss, epsilon_loss, coherence_loss
+    return total_loss
 
 
 @torch.no_grad()
@@ -352,6 +387,16 @@ def train(config, quick_test=False):
     init_checkpoint = train_cfg.get("init_checkpoint")
     checkpoint_dir = Path(train_cfg.get(
         "checkpoint_dir", "outputs/h384_200k/checkpoints"))
+    coh_weight = float(train_cfg.get("coh_weight", 0.0))
+    edge_cache_path = train_cfg.get("edge_cache")
+    coh_kwargs = {
+        "huber_beta": float(train_cfg.get("coh_huber_beta", 0.05)),
+        "weight_by_abar": bool(train_cfg.get("coh_weight_by_abar", True)),
+        "hinge_k": float(train_cfg.get("coh_hinge_k", 0.0)),
+        "hinge_weight": float(train_cfg.get("coh_hinge_weight", 0.0)),
+    }
+    if coh_weight > 0.0 and not edge_cache_path:
+        raise ValueError("train.coh_weight > 0 requires train.edge_cache")
 
     if precision not in {"fp32", "bf16"}:
         raise ValueError("train.precision must be fp32 or bf16")
@@ -412,6 +457,16 @@ def train(config, quick_test=False):
         packaged_dir, sample_ids=train_ids, return_render_poses=False)
     val_dataset = CoronaryCenterlineDatasetV31(
         packaged_dir, sample_ids=val_ids, return_render_poses=False)
+    edge_collate = None
+    if coh_weight > 0.0:
+        edge_map, edge_meta = load_edge_cache(
+            edge_cache_path, packaged_dir,
+            required_ids=list(train_ids))
+        edge_collate = EdgeCollate(edge_map)
+        print(f"edge cache: {edge_meta['n_samples']} samples, "
+              f"fingerprints verified, coh_weight={coh_weight:g}, "
+              f"{coh_kwargs}")
+
     loader_kwargs = {
         "num_workers": num_workers,
         "pin_memory": pin_memory and device_type == "cuda",
@@ -450,6 +505,8 @@ def train(config, quick_test=False):
         "compile": compile_model,
         "dataset_fingerprint": _dataset_fingerprint(
             packaged_dir, train_ids, val_ids),
+        "coh_weight": coh_weight,
+        "coh_kwargs": coh_kwargs,
     }
 
     step = 0
@@ -458,7 +515,7 @@ def train(config, quick_test=False):
     early_stop_reference = float("inf")
     checks_since_improvement = 0
     history = {"train_step": [], "train_loss": [], "val_step": [],
-               "val_loss": [], "lr": []}
+               "val_loss": [], "lr": [], "eps_loss": [], "coh_loss": []}
     elapsed_before = 0.0
     session_count = 1
 
@@ -507,12 +564,15 @@ def train(config, quick_test=False):
         print(f"Run already complete at step {step}")
         return best_path
 
+    train_loader_kwargs = dict(loader_kwargs)
+    if edge_collate is not None:
+        train_loader_kwargs["collate_fn"] = edge_collate
     train_loader = DataLoader(
         train_dataset,
         batch_sampler=DeterministicStepBatchSampler(
             len(train_dataset), batch_size, step, max_steps, seed + 10_000),
         generator=torch.Generator().manual_seed(seed + 2_000_000),
-        **loader_kwargs)
+        **train_loader_kwargs)
 
     model = raw_model
     if compile_model:
@@ -549,9 +609,11 @@ def train(config, quick_test=False):
         model.train()
         optimizer.zero_grad(set_to_none=True)
         with _autocast_context(device, precision):
-            loss = compute_loss(
+            loss, eps_part, coh_part = compute_loss(
                 model, noise_scheduler, batch, device,
-                cond_drop_prob=cond_drop_prob, self_cond_p=self_cond_p)
+                cond_drop_prob=cond_drop_prob, self_cond_p=self_cond_p,
+                coh_weight=coh_weight, coh_kwargs=coh_kwargs,
+                return_coh=True)
         loss.backward()
         if grad_clip_norm > 0:
             torch.nn.utils.clip_grad_norm_(
@@ -570,6 +632,8 @@ def train(config, quick_test=False):
                     f"Non-finite training loss at step {step}")
             history["train_step"].append(step)
             history["train_loss"].append(loss_value)
+            history["eps_loss"].append(float(eps_part))
+            history["coh_loss"].append(float(coh_part))
 
         # Check before starting a potentially long validation pass.
         if (step < max_steps
@@ -589,8 +653,13 @@ def train(config, quick_test=False):
             current_train_loss = (
                 history["train_loss"][-1] if history["train_loss"]
                 else float(loss.detach()))
+            parts = ""
+            if coh_weight > 0.0:
+                parts = (f", eps={float(eps_part):.6f}"
+                         f", coh={float(coh_part):.6f}"
+                         f", w*coh={coh_weight * float(coh_part):.6f}")
             print(
-                f"step {step}: train_loss={current_train_loss:.6f}, "
+                f"step {step}: train_loss={current_train_loss:.6f}{parts}, "
                 f"val_loss={last_val_loss:.6f}, "
                 f"lr={optimizer.param_groups[0]['lr']:.3e}, "
                 f"session_elapsed={time.time() - session_started:.1f}s")
