@@ -76,7 +76,7 @@ class CoronaryCenterlineDatasetV31(Dataset):
         centerline_mask   (max_points,) bool
         poses             (2, 3, 4) float32  NOMINAL scanner geometry  <- model input
         poses_render      (2, 3, 4) float32  motion-carrying           <- eval/QC ONLY
-        patient_id, vessel, iso_mm, n_points
+        patient_id, vessel, iso_mm, sVoxel, iso_shape, n_points
 
     `normalize=False` returns raw millimetres, which is what you want for
     computing Chamfer distance in physical units at evaluation time.
@@ -138,6 +138,11 @@ class CoronaryCenterlineDatasetV31(Dataset):
                 "patient_id": int(d["patient_id"]),
                 "vessel": str(d["vessel"]),
                 "iso_mm": float(d["iso_mm"]),
+                # Evaluation metadata only. These values define the physical
+                # crop support and are never fed to the denoiser.
+                "sVoxel": torch.from_numpy(d["sVoxel"].astype(np.float32)),
+                "iso_shape": torch.from_numpy(
+                    d["iso_shape"].astype(np.int32)),
                 "n_points": int(d["n_points"]),
                 "sample": sid,
             }

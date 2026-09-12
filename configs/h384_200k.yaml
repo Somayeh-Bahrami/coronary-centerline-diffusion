@@ -1,38 +1,34 @@
-# Phase 1 default config
+# Clean h384 / 200k baseline. Molab writes a resolved copy with absolute paths.
 
 data:
-  raw_dir: data/raw
-  centerline_dir: data/processed/centerlines
-  packaged_dir:  data/processed/ds105_full   # <-- point at the new dataset
-  splits_dir: data/splits                           # <-- dir, not splits_file
-
-drr:
-  n_views: 2
-  motion_rotation_deg: 10.0
-  motion_translation_mm: 8.0
+  packaged_dir: data/processed/ds105_full
 
 train:
-  # Clean h384/200k baseline. For an immutable experiment file, use
-  # configs/h384_200k.yaml (the Molab notebook writes an absolute-path copy).
   hidden_dim: 384
   batch_size: 16
   lr: 3.0e-4
   max_steps: 200000
   warmup_steps: 2000
   eta_min_ratio: 0.01
+
+  # Finish the complete cosine schedule. Numerical best.pt is still retained.
   early_stopping: false
   early_stop_min_steps: 150000
   patience: 30
   min_delta: 1.0e-4
+
   val_every: 1000
   checkpoint_every: 1000
   milestone_every: 25000
   log_every: 50
-  max_hours: 11.0
+  max_hours: 11.0          # per session; leaves margin below a 12 h runtime cap
+
   cond_drop_prob: 0.10
   self_cond_p: 0.50
   precision: bf16
+  grad_clip_norm: 0.0
   seed: 20260911
+
   num_workers: 4
   pin_memory: true
   persistent_workers: true
@@ -40,14 +36,19 @@ train:
   allow_tf32: true
   cudnn_benchmark: true
   compile: false
+
+  # New directory => starts from random weights; rerunning resumes exactly.
   resume_mode: auto
   init_checkpoint: null
   checkpoint_dir: outputs/h384_200k/checkpoints
-  device: auto
+
+  quick_steps: 20
+  quick_val_every: 10
 
 eval:
-  overlap_thresholds_mm: [1.0, 2.0, 5.0]
+  split: val
   bounds: physical
+  overlap_thresholds_mm: [1.0, 2.0, 5.0]
   sampler_steps_grid: [25, 50, 100]
   guidance_grid: [1.0, 2.0]
   sampling_seeds: [104729, 130363, 155921]

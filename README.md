@@ -65,7 +65,7 @@ baseline (`src/coronarycl/models/baseline.py`) is implemented
 alongside it to establish a reconstruction-quality floor.
 
 ```bash
-python train.py --config configs/default.yaml           # full run — needs a CUDA GPU
+python train.py --config configs/h384_200k.yaml         # clean 200k run — CUDA/BF16
 python train.py --config configs/default.yaml --quick-test   # local M4 sanity check
 ```
 
@@ -77,15 +77,19 @@ versus ~800 training patients with 2D-projection conditioning here).
 
 ## Evaluation
 
-Chamfer L2 distance and a threshold-based overlap metric Ot(d)
-(following DeepCA's protocol), reported for the baseline and diffusion
-model side by side, plus a stress-test subset (high foreshortening /
-vessel overlap) and tube-surface visualizations for clinical review
-(predicted vs. ground truth, including visible-stenosis cases).
+Sampler/checkpoint settings are selected on VAL only. Evaluation reports the
+project's summed, unsquared Chamfer-L2 convention, HD95, Ot(1/2/5 mm),
+given-topology continuity and tree length, and crop violations. The canonical
+DDIM sampler is padding-aware and uses physical per-channel bounds. TEST stays
+locked until the complete protocol is frozen.
 
 ```bash
-python evaluate.py --pred outputs/pred_centerline.npy --gt data/processed/centerlines/case_0001_centerline.npy
-python visualize_tube.py --centerline outputs/pred_centerline.npy --output tube.obj
+python ddim_eval.py --ckpt outputs/h384_200k/checkpoints/best.pt \
+  --data data/processed/ds105_full --split val --steps 50 --guidance 1.0 \
+  --out outputs/h384_200k/val_s50_g1.json --save-pred outputs/h384_200k/val_s50_g1.npz
+python cond_sensitivity.py --data data/processed/ds105_full \
+  --ckpt h384=outputs/h384_200k/checkpoints/best.pt \
+  --out-dir outputs/h384_200k/sensitivity_joint --shuffle-mode joint
 ```
 
 ## Fine-tuning

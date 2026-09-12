@@ -38,9 +38,10 @@ v3.3 adds, from review:
      of 4 internally, marks the pad invalid, and crops the output back, so
      sampling can pass any length. N=2500 is unchanged (pad == 0).
 
-NOT a defect: the topology label (column 4 of the packaged centerline) does not
-enter the model. node_dim=4 is the stated design -- the denoiser predicts noise
-for x, y, z, radius only, with topology fixed/given.
+The topology label (column 4 of the packaged centerline) does not enter the
+model. ``node_dim=4`` means the denoiser predicts noise for x, y, z, and radius.
+Current generation does use the GT node count and row correspondence; any
+edge-based evaluation must state that it uses given/oracle GT topology.
 
 CALL SITES TO UPDATE (2 lines, both outside this file):
   trainer.compute_loss  -> model(noisy, t, images, poses, x0_self=..., node_mask=mask)
@@ -53,7 +54,7 @@ configuration, not as a hyperparameter change.
 
 Unchanged from v3.1: 3DPQT positional-query conditioning (DX2CT, Jeong et al.
 2025), SPADE conditioning (Park et al. 2019), self-conditioning (Chen et al.
-2022), topology column fixed/given, denoiser predicts noise for columns 0-3.
+2022), and noise prediction for columns 0-3.
 """
 
 import math
@@ -105,11 +106,17 @@ class MaskedGroupNorm1d(nn.Module):
         xg = x.view(B, G, Cg, N)
         mg = m.view(B, 1, 1, N)
 
-        cnt = mg.sum(dim=(2, 3), keepdim=True) * Cg           # valid elems per group
+        # Always accumulate normalization statistics in FP32. This makes the
+        # intended Blackwell BF16 training path stable without changing any
+        # parameters or checkpoint shapes.
+        x_stats = xg.float()
+        m_stats = mg.float()
+        cnt = m_stats.sum(dim=(2, 3), keepdim=True) * Cg      # valid elems per group
         cnt = cnt.clamp(min=1.0)                               # guard all-padded
-        mean = (xg * mg).sum(dim=(2, 3), keepdim=True) / cnt
-        var = (((xg - mean) ** 2) * mg).sum(dim=(2, 3), keepdim=True) / cnt
-        xg = (xg - mean) * torch.rsqrt(var + self.eps)
+        mean = (x_stats * m_stats).sum(dim=(2, 3), keepdim=True) / cnt
+        var = (((x_stats - mean) ** 2) * m_stats).sum(
+            dim=(2, 3), keepdim=True) / cnt
+        xg = ((x_stats - mean) * torch.rsqrt(var + self.eps)).to(x.dtype)
 
         out = xg.view(B, C, N)
         if self.affine:
