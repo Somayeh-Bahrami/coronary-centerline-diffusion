@@ -285,7 +285,11 @@ class SelfAttentionBlock1D(nn.Module):
 
 
 class CenterlineDenoiser(nn.Module):
-    """1D-UNet denoiser over centerline nodes (x, y, z, radius).
+    """1D convolutional encoder-decoder over (x, y, z, radius) nodes.
+
+    This network has a bottleneck attention block but no U-Net skip
+    connections. The precise name matters when describing the architecture in
+    a paper; this documentation change does not alter checkpoint numerics.
 
     forward(noisy_nodes, t, images, poses, x0_self=None, node_mask=None)
       node_mask: (B, N) bool, True = valid node. None => all valid (v3.1 behaviour).
