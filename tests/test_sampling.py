@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.coronarycl.sampling import ddim_timesteps, sample_ddim
 from src.coronarycl.trainer import NoiseScheduler
+from src.coronarycl.prediction import training_target
 
 
 class ZeroDenoiser(torch.nn.Module):
@@ -32,6 +33,28 @@ class RecordingDenoiser(torch.nn.Module):
             "mask": node_mask.detach().clone(),
         })
         return torch.zeros_like(noisy) * node_mask.unsqueeze(-1)
+
+
+class OracleDenoiser(torch.nn.Module):
+    def __init__(self, scheduler, x0, prediction_type):
+        super().__init__()
+        self.scheduler = scheduler
+        self.x0 = x0
+        self.prediction_type = prediction_type
+        self.self_conditions = []
+
+    def forward(self, noisy, timestep, images, poses, x0_self=None,
+                node_mask=None):
+        del images, poses
+        self.self_conditions.append(
+            None if x0_self is None else x0_self.detach().clone())
+        alpha_bar = self.scheduler.alpha_bars[timestep].view(-1, 1, 1)
+        epsilon = (
+            noisy - torch.sqrt(alpha_bar) * self.x0
+        ) / torch.sqrt(1.0 - alpha_bar)
+        output = training_target(
+            self.x0, epsilon, alpha_bar, self.prediction_type)
+        return output * node_mask.unsqueeze(-1)
 
 
 def inputs():
@@ -138,3 +161,50 @@ def test_zero_epsilon_ddim_matches_closed_form_solution():
         initial_noise=initial, n_steps=5)
     expected = initial / scheduler.alpha_bars[-1].sqrt()
     assert torch.allclose(sampled, expected, atol=1e-6, rtol=1e-6)
+
+
+def test_default_sampler_is_exactly_explicit_epsilon():
+    model = ZeroDenoiser()
+    scheduler = NoiseScheduler(n_steps=20)
+    images, poses, mask = inputs()
+    initial = torch.randn(2, 6, 4) * mask.unsqueeze(-1)
+
+    default = sample_ddim(
+        model, scheduler, images, poses, mask, "cpu",
+        initial_noise=initial, n_steps=5)
+    explicit = sample_ddim(
+        model, scheduler, images, poses, mask, "cpu",
+        initial_noise=initial, n_steps=5, prediction_type="epsilon")
+
+    assert torch.equal(default, explicit)
+
+
+@pytest.mark.parametrize("prediction_type", ["epsilon", "v"])
+def test_oracle_sampler_recovers_x0_and_self_conditions(prediction_type):
+    scheduler = NoiseScheduler(n_steps=20)
+    images, poses, mask = inputs()
+    target = torch.randn(2, 6, 4) * mask.unsqueeze(-1)
+    initial = torch.randn_like(target) * mask.unsqueeze(-1)
+    model = OracleDenoiser(scheduler, target, prediction_type)
+
+    sampled = sample_ddim(
+        model, scheduler, images, poses, mask, "cpu",
+        initial_noise=initial, n_steps=5,
+        prediction_type=prediction_type)
+
+    torch.testing.assert_close(sampled, target, atol=2e-5, rtol=2e-5)
+    assert model.self_conditions[0] is None
+    for x0_self in model.self_conditions[1:]:
+        torch.testing.assert_close(
+            x0_self, target[..., :3], atol=2e-5, rtol=2e-5)
+
+
+def test_sampler_rejects_invalid_prediction_type():
+    model = ZeroDenoiser()
+    scheduler = NoiseScheduler(n_steps=20)
+    images, poses, mask = inputs()
+
+    with pytest.raises(ValueError, match="prediction_type"):
+        sample_ddim(
+            model, scheduler, images, poses, mask, "cpu",
+            seed=31, n_steps=5, prediction_type="x0")

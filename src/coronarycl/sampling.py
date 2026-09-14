@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import torch
 
+from .prediction import (
+    model_output_to_x0_epsilon,
+    validate_prediction_type,
+)
+
 
 def ddim_timesteps(training_steps, sampling_steps, device="cpu"):
     """Exactly ``sampling_steps`` unique indices, including T-1 and zero."""
@@ -40,6 +45,7 @@ def sample_ddim(
     guidance_scale=1.0,
     x0_min=None,
     x0_max=None,
+    prediction_type="epsilon",
 ):
     """Deterministic eta=0 DDIM with CFG and componentwise x0 bounds.
 
@@ -50,6 +56,7 @@ def sample_ddim(
     ``seed`` or ``initial_noise`` may be supplied; the evaluator uses explicit
     per-sample noise so results do not depend on batch composition.
     """
+    prediction_type = validate_prediction_type(prediction_type)
     if node_mask is None:
         raise ValueError("node_mask is required; implicit padding is unsafe")
     if guidance_scale <= 0:
@@ -123,23 +130,22 @@ def sample_ddim(
             timestep_batch = torch.full(
                 (batch_size,), int(timestep),
                 device=device, dtype=torch.long)
-            epsilon_conditional = model(
+            conditional_output = model(
                 x_t, timestep_batch, images, poses,
                 x0_self=x0_self, node_mask=mask)
             if guidance_scale == 1.0:
-                epsilon = epsilon_conditional
+                model_output = conditional_output
             else:
-                epsilon_unconditional = model(
+                unconditional_output = model(
                     x_t, timestep_batch, null_images, null_poses,
                     x0_self=x0_self, node_mask=mask)
-                epsilon = epsilon_unconditional + guidance_scale * (
-                    epsilon_conditional - epsilon_unconditional)
-            epsilon = epsilon * mask_float
+                model_output = unconditional_output + guidance_scale * (
+                    conditional_output - unconditional_output)
+            model_output = model_output * mask_float
 
             alpha_t = scheduler.alpha_bars[timestep]
-            x0_hat = (
-                x_t - torch.sqrt(1.0 - alpha_t) * epsilon
-            ) / torch.sqrt(alpha_t)
+            x0_hat, epsilon = model_output_to_x0_epsilon(
+                x_t, model_output, alpha_t, prediction_type)
             if lower is not None:
                 x0_hat = torch.maximum(
                     torch.minimum(x0_hat, upper), lower)
