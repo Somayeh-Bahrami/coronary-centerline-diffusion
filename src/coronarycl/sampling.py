@@ -65,8 +65,14 @@ def sample_ddim(
         images = images.to(device)
         poses = poses.to(device)
         mask = node_mask.to(device=device, dtype=torch.bool)
+        if images.ndim != 4 or images.shape[1] != 2:
+            raise ValueError("images must have shape (B,2,H,W)")
+        if poses.shape != (images.shape[0], 2, 3, 4):
+            raise ValueError("poses must have shape (B,2,3,4)")
         if mask.ndim != 2 or mask.shape[0] != images.shape[0]:
             raise ValueError("node_mask must have shape (B,N)")
+        if not torch.all(mask.any(dim=1)):
+            raise ValueError("every sample must contain at least one valid node")
         batch_size, n_points = mask.shape
         mask_float = mask.unsqueeze(-1).to(dtype=images.dtype)
 
@@ -85,6 +91,8 @@ def sample_ddim(
                 raise ValueError(
                     "initial_noise must have shape "
                     f"{(batch_size, n_points, 4)}, got {tuple(x_t.shape)}")
+            if not torch.isfinite(x_t).all():
+                raise ValueError("initial_noise must contain only finite values")
         x_t = x_t * mask_float
 
         lower = upper = None
@@ -101,6 +109,8 @@ def sample_ddim(
                     "x0 bounds are not broadcastable to (B,N,4)") from error
             if torch.any(lower >= upper):
                 raise ValueError("every x0_min must be smaller than x0_max")
+            if not torch.isfinite(lower).all() or not torch.isfinite(upper).all():
+                raise ValueError("x0 bounds must contain only finite values")
 
         null_images = null_poses = None
         if guidance_scale != 1.0:

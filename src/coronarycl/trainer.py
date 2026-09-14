@@ -29,8 +29,8 @@ from torch.utils.data import DataLoader, Sampler
 from .config import resolve_device
 from .dataset_v3_1 import CoronaryCenterlineDatasetV31, list_samples
 from .models.diffusion import CenterlineDenoiser
-from .edge_coherence import (EdgeCollate, edge_coherence_loss,
-                             load_edge_cache, x0_from_eps)
+from .edge_coherence import EdgeCollate, load_edge_cache, x0_from_eps
+from .edge_coherence_grouped import edge_coherence_loss
 
 EVAL_TIMESTEPS = [0, 250, 500, 750, 999]
 EVAL_SEED = 12345
@@ -182,6 +182,20 @@ def _dataset_fingerprint(packaged_dir, train_ids, val_ids):
     encoded = json.dumps(
         manifest, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _file_fingerprint(path):
+    """Content identity for an optional training sidecar."""
+    if not path:
+        return None
+    candidate = Path(path)
+    if candidate.is_dir():
+        candidate = candidate / "edges_v1.npz"
+    digest = hashlib.sha256()
+    with candidate.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def compute_loss(
@@ -394,9 +408,16 @@ def train(config, quick_test=False):
         "weight_by_abar": bool(train_cfg.get("coh_weight_by_abar", True)),
         "hinge_k": float(train_cfg.get("coh_hinge_k", 0.0)),
         "hinge_weight": float(train_cfg.get("coh_hinge_weight", 0.0)),
+        "group_balanced": bool(train_cfg.get("coh_group_balanced", False)),
+        "consecutive_weight": float(
+            train_cfg.get("coh_consecutive_weight", 0.0)),
+        "nonconsecutive_weight": float(
+            train_cfg.get("coh_nonconsecutive_weight", 0.0)),
     }
     if coh_weight > 0.0 and not edge_cache_path:
         raise ValueError("train.coh_weight > 0 requires train.edge_cache")
+    if not math.isfinite(coh_weight) or coh_weight < 0.0:
+        raise ValueError("train.coh_weight must be finite and non-negative")
 
     if precision not in {"fp32", "bf16"}:
         raise ValueError("train.precision must be fp32 or bf16")
@@ -507,6 +528,7 @@ def train(config, quick_test=False):
             packaged_dir, train_ids, val_ids),
         "coh_weight": coh_weight,
         "coh_kwargs": coh_kwargs,
+        "edge_cache_sha256": _file_fingerprint(edge_cache_path),
     }
 
     step = 0
