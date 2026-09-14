@@ -29,6 +29,7 @@ from src.coronarycl.dataset_v3_1 import (  # noqa: E402
 from src.coronarycl.metrics import (  # noqa: E402
     crop_bounds_mm, evaluate_case, topology_tree_edges)
 from src.coronarycl.models.diffusion import CenterlineDenoiser  # noqa: E402
+from src.coronarycl.prediction import validate_prediction_type  # noqa: E402
 from src.coronarycl.sampling import sample_ddim  # noqa: E402
 from src.coronarycl.trainer import NoiseScheduler  # noqa: E402
 
@@ -92,6 +93,18 @@ def file_sha256(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def checkpoint_prediction_type(checkpoint):
+    """Read an unambiguous prediction type; legacy checkpoints use epsilon."""
+    top_level = checkpoint.get("prediction_type")
+    signature = checkpoint.get("run_signature") or {}
+    signed = signature.get("prediction_type")
+    if top_level is not None and signed is not None and top_level != signed:
+        raise RuntimeError(
+            "Checkpoint prediction_type is inconsistent: "
+            f"top-level={top_level!r}, run_signature={signed!r}")
+    return validate_prediction_type(top_level or signed or "epsilon")
 
 
 def stable_sample_seed(base_seed, sample_id):
@@ -370,11 +383,13 @@ def main():
 
     model = checkpoint = scheduler = None
     checkpoint_metadata = None
+    prediction_type = None
     if args.mean_shape:
         templates = mean_shape_templates(args.data)
     else:
         checkpoint = torch.load(
             args.ckpt, map_location="cpu", weights_only=True)
+        prediction_type = checkpoint_prediction_type(checkpoint)
         model = CenterlineDenoiser(
             hidden_dim=int(checkpoint["hidden_dim"])).to(device)
         model.load_state_dict(checkpoint["model"], strict=True)
@@ -386,7 +401,9 @@ def main():
             "hidden_dim": int(checkpoint["hidden_dim"]),
             "step": int(checkpoint["step"]),
             "val_loss": checkpoint.get("val_loss"),
+            "prediction_type": prediction_type,
         }
+        print(f"checkpoint prediction_type={prediction_type}")
 
     rows = []
     prediction_archive = {}
@@ -428,7 +445,8 @@ def main():
                         model, scheduler, images, poses, mask, device,
                         initial_noise=noise, n_steps=args.steps,
                         guidance_scale=args.guidance,
-                        x0_min=lower, x0_max=upper)
+                        x0_min=lower, x0_max=upper,
+                        prediction_type=prediction_type)
                 denormalized = dataset.denormalize(
                     normalized.float().cpu().numpy())
                 predictions_mm = [
@@ -474,6 +492,7 @@ def main():
             "bounds": args.bounds,
             "radius_bounds_mm_from_train": list(radius_bounds),
             "precision": args.precision,
+            "prediction_type": prediction_type,
             "n_points_source": "ground truth",
             "topology_metrics": "given/oracle GT topology",
             "chamfer_convention": (
