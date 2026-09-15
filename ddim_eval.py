@@ -26,8 +26,9 @@ sys.path.insert(0, str(REPO))
 
 from src.coronarycl.dataset_v3_1 import (  # noqa: E402
     CoronaryCenterlineDatasetV31, list_samples)
+from src.coronarycl.edge_coherence import load_edge_cache  # noqa: E402
 from src.coronarycl.metrics import (  # noqa: E402
-    crop_bounds_mm, evaluate_case, topology_tree_edges)
+    crop_bounds_mm, evaluate_case)
 from src.coronarycl.models.diffusion import CenterlineDenoiser  # noqa: E402
 from src.coronarycl.prediction import validate_prediction_type  # noqa: E402
 from src.coronarycl.sampling import sample_ddim  # noqa: E402
@@ -65,6 +66,10 @@ def parse_args():
     parser.add_argument("--ckpt", type=Path)
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument(
+        "--edge-cache", type=Path, required=True,
+        help=("canonical graph cache for this exact dataset ordering; "
+              "topology is never reconstructed from denormalized coordinates"))
+    parser.add_argument(
         "--split", choices=("val", "test", "train"), default="val")
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--guidance", type=float, default=1.0)
@@ -93,6 +98,16 @@ def file_sha256(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def edge_cache_file(path):
+    """Resolve a cache directory or direct NPZ path without guessing silently."""
+    path = Path(path).expanduser().resolve()
+    if path.is_dir():
+        path = path / "edges_v1.npz"
+    if not path.is_file():
+        raise FileNotFoundError(f"canonical edge cache not found: {path}")
+    return path
 
 
 def checkpoint_prediction_type(checkpoint):
@@ -320,6 +335,7 @@ def _print_summary(summary):
 def main():
     args = parse_args()
     args.data = args.data.expanduser().resolve()
+    args.edge_cache = edge_cache_file(args.edge_cache)
     args.out = args.out.expanduser().resolve()
     if args.ckpt:
         args.ckpt = args.ckpt.expanduser().resolve()
@@ -360,6 +376,10 @@ def main():
         sample_ids = sample_ids[:args.limit]
     dataset = CoronaryCenterlineDatasetV31(
         args.data, sample_ids=sample_ids, return_render_poses=False)
+    canonical_edges, edge_metadata = load_edge_cache(
+        args.edge_cache, args.data, required_ids=sample_ids)
+    if int(edge_metadata["n_verified"]) != len(sample_ids):
+        raise RuntimeError("canonical edge cache was not verified for every sample")
     cached_items = [dataset[index] for index in range(len(dataset))]
     order = sorted(
         range(len(sample_ids)),
@@ -369,7 +389,7 @@ def main():
         count = int(item["n_points"])
         gt_mm = dataset.denormalize(
             item["centerline"].numpy())[:count, :4]
-        edges = topology_tree_edges(gt_mm[:, :3], item["iso_mm"])
+        edges = np.asarray(canonical_edges[item["sample"]], dtype=np.int64)
         if len(edges) != count - 1:
             raise RuntimeError(
                 f"{item['sample']}: GT neighbour graph has {len(edges)} "
@@ -379,7 +399,8 @@ def main():
         metric_context[item["sample"]] = (gt_mm, edges, lower, upper)
     print(
         f"split={args.split}; samples={len(sample_ids)}; seeds={seeds}; "
-        f"radius TRAIN range={radius_bounds[0]:.3f}..{radius_bounds[1]:.3f} mm")
+        f"radius TRAIN range={radius_bounds[0]:.3f}..{radius_bounds[1]:.3f} mm; "
+        f"canonical edges verified={edge_metadata['n_verified']}")
 
     model = checkpoint = scheduler = None
     checkpoint_metadata = None
@@ -495,6 +516,9 @@ def main():
             "prediction_type": prediction_type,
             "n_points_source": "ground truth",
             "topology_metrics": "given/oracle GT topology",
+            "topology_edge_source": "canonical edge cache",
+            "topology_edge_cache": str(args.edge_cache),
+            "topology_edge_cache_sha256": file_sha256(args.edge_cache),
             "chamfer_convention": (
                 "mean(pred->gt)+mean(gt->pred), Euclidean, unsquared"),
             "aggregation": (
