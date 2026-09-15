@@ -32,6 +32,11 @@ from src.coronarycl.optimal_ordering import (  # noqa: E402
 
 
 ORDERING_VERSION = "optimal_linear_v1"
+REQUIRED_METADATA = (
+    "case_splits_v3.json",
+    "norm_stats_v3.json",
+    "pilot_report_v3.json",
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -181,11 +186,16 @@ def main() -> None:
     parser.add_argument("--source", required=True)
     parser.add_argument("--permutations", required=True)
     parser.add_argument("--source-edge-cache", required=True)
+    parser.add_argument(
+        "--metadata-dir",
+        help="directory containing the three required v3 JSON files; defaults to --source",
+    )
     parser.add_argument("--out", required=True)
     parser.add_argument("--edge-out", required=True)
     args = parser.parse_args()
 
     source = Path(args.source).resolve()
+    metadata_dir = Path(args.metadata_dir or args.source).resolve()
     permutation_path = Path(args.permutations).resolve()
     source_cache_path = Path(args.source_edge_cache).resolve()
     if source_cache_path.is_dir():
@@ -198,6 +208,13 @@ def main() -> None:
     for path, label in ((permutation_path, "permutation bank"), (source_cache_path, "edge cache")):
         if not path.is_file():
             raise SystemExit(f"{label} not found: {path}")
+    missing_metadata = [
+        name for name in REQUIRED_METADATA if not (metadata_dir / name).is_file()
+    ]
+    if missing_metadata:
+        raise SystemExit(
+            f"required dataset metadata missing from {metadata_dir}: {missing_metadata}"
+        )
     for path in (output, edge_output):
         if path.exists():
             raise SystemExit(f"REFUSED: output already exists: {path}")
@@ -244,7 +261,10 @@ def main() -> None:
                 print(f"  transformed and verified {index}/{len(sample_ids)} samples", flush=True)
 
         json_hashes = {}
+        metadata_sources = {name: metadata_dir / name for name in REQUIRED_METADATA}
         for source_json in sorted(source.glob("*.json")):
+            metadata_sources.setdefault(source_json.name, source_json)
+        for name, source_json in sorted(metadata_sources.items()):
             target_json = temp_dataset / source_json.name
             shutil.copy2(source_json, target_json)
             if source_json.read_bytes() != target_json.read_bytes():
@@ -290,6 +310,7 @@ def main() -> None:
             "schema_version": "optimal_order_dataset_v1",
             "ordering_version": ORDERING_VERSION,
             "source_dataset": str(source),
+            "metadata_directory": str(metadata_dir),
             "source_edge_cache_sha256": sha256_file(source_cache_path),
             "source_edge_cache_metadata_sha256": hashlib.sha256(
                 json.dumps(source_edge_meta, sort_keys=True).encode()

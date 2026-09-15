@@ -68,3 +68,11 @@ def test_transform_rejects_nonzero_padding():
         assert "padding" in str(error)
     else:
         raise AssertionError("nonzero padding was accepted")
+
+
+def test_required_metadata_list_is_complete():
+    assert MODULE.REQUIRED_METADATA == (
+        "case_splits_v3.json",
+        "norm_stats_v3.json",
+        "pilot_report_v3.json",
+    )

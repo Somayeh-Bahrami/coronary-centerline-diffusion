@@ -10,6 +10,13 @@ from pathlib import Path
 import numpy as np
 
 
+REQUIRED_METADATA = (
+    "case_splits_v3.json",
+    "norm_stats_v3.json",
+    "pilot_report_v3.json",
+)
+
+
 def fingerprint(points: np.ndarray) -> str:
     raw = np.ascontiguousarray(points, dtype=np.float64).tobytes()
     return hashlib.sha256(raw).hexdigest()[:16]
@@ -34,9 +41,14 @@ def main() -> None:
     parser.add_argument("--permutations", required=True)
     parser.add_argument("--source-edge-cache", required=True)
     parser.add_argument("--derived-edge-cache", required=True)
+    parser.add_argument(
+        "--metadata-dir",
+        help="authoritative v3 JSON directory; defaults to --source",
+    )
     args = parser.parse_args()
 
     source, derived = Path(args.source), Path(args.derived)
+    metadata_dir = Path(args.metadata_dir or args.source)
     source_cache = Path(args.source_edge_cache)
     derived_cache = Path(args.derived_edge_cache)
     if source_cache.is_dir():
@@ -105,10 +117,13 @@ def main() -> None:
         if index % 200 == 0:
             print(f"  independently verified {index}/{len(source_ids)} samples", flush=True)
 
-    for source_json in source.glob("*.json"):
-        target = derived / source_json.name
-        if not target.is_file() or source_json.read_bytes() != target.read_bytes():
-            raise AssertionError(f"JSON was not copied byte-identically: {source_json.name}")
+    for name in REQUIRED_METADATA:
+        authoritative = metadata_dir / name
+        target = derived / name
+        if not authoritative.is_file():
+            raise AssertionError(f"required authoritative metadata missing: {authoritative}")
+        if not target.is_file() or authoritative.read_bytes() != target.read_bytes():
+            raise AssertionError(f"JSON was not copied byte-identically: {name}")
 
     expected_splits = {"train": 1350, "val": 177, "test": 167}
     if split_counts != expected_splits:
