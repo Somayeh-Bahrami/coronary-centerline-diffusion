@@ -53,6 +53,9 @@ METRIC_KEYS = [
     "mean_crop_excess_mm",
     "max_crop_excess_mm",
     "radius_mae_mm",
+    "radius_rmse_mm",
+    "radius_bias_mm",
+    "radius_correlation",
     "radius_out_of_train_range_fraction",
 ]
 
@@ -202,6 +205,29 @@ def mean_shape_templates(data_dir, count=256):
         for vessel, curves in accumulated.items()}
 
 
+def radius_metrics(predicted, ground_truth):
+    """Point-corresponded physical-radius errors for one ordered sample."""
+    predicted = np.asarray(predicted, dtype=np.float64)
+    ground_truth = np.asarray(ground_truth, dtype=np.float64)
+    if predicted.shape != ground_truth.shape or predicted.ndim != 1:
+        raise ValueError("radius arrays must be one-dimensional with equal shape")
+    if (len(predicted) == 0 or not np.isfinite(predicted).all()
+            or not np.isfinite(ground_truth).all()):
+        raise ValueError("radius arrays must be non-empty and finite")
+    error = predicted - ground_truth
+    correlation = (
+        float("nan")
+        if np.std(predicted) == 0 or np.std(ground_truth) == 0
+        else float(np.corrcoef(predicted, ground_truth)[0, 1])
+    )
+    return {
+        "radius_mae_mm": float(np.mean(np.abs(error))),
+        "radius_rmse_mm": float(np.sqrt(np.mean(error ** 2))),
+        "radius_bias_mm": float(np.mean(error)),
+        "radius_correlation": correlation,
+    }
+
+
 def _metric_row(
     item, seed, pred_mm, gt_mm, radius_bounds, edges, lower, upper,
 ):
@@ -210,9 +236,8 @@ def _metric_row(
         pred_xyz, gt_xyz, thresholds=(1.0, 2.0, 5.0),
         edges=edges, xyz_lower_mm=lower, xyz_upper_mm=upper)
     pred_radius = pred_mm[:, 3]
+    metrics.update(radius_metrics(pred_radius, gt_mm[:, 3]))
     metrics.update({
-        "radius_mae_mm": float(np.mean(
-            np.abs(pred_radius - gt_mm[:, 3]))),
         "radius_out_of_train_range_fraction": float(np.mean(
             (pred_radius < radius_bounds[0])
             | (pred_radius > radius_bounds[1]))),
@@ -281,7 +306,9 @@ def aggregate_rows(rows, bootstrap_repeats):
     headline = [
         "chamfer_l2", "hd95_mm", "overlap@2.0mm",
         "edge_continuity_5x", "largest_connected_component_fraction_5x",
-        "tree_length_ratio", "out_of_crop_fraction"]
+        "tree_length_ratio", "out_of_crop_fraction",
+        "radius_mae_mm", "radius_rmse_mm", "radius_bias_mm",
+        "radius_correlation"]
     patient_ci = {}
     for key in headline:
         per_patient = np.asarray([

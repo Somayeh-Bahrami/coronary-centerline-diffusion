@@ -1,6 +1,6 @@
 import pytest
 
-from ddim_eval import checkpoint_prediction_type, edge_cache_file
+from ddim_eval import checkpoint_prediction_type, edge_cache_file, radius_metrics
 
 
 def test_legacy_checkpoint_defaults_to_epsilon():
@@ -48,3 +48,16 @@ def test_edge_cache_file_accepts_directory_or_npz(tmp_path):
 def test_edge_cache_file_rejects_missing_path(tmp_path):
     with pytest.raises(FileNotFoundError, match="canonical edge cache"):
         edge_cache_file(tmp_path / "missing")
+
+
+def test_radius_metrics_report_physical_errors_and_correlation():
+    result = radius_metrics([1.5, 2.5, 3.5], [1.0, 2.0, 3.0])
+    assert result["radius_mae_mm"] == pytest.approx(0.5)
+    assert result["radius_rmse_mm"] == pytest.approx(0.5)
+    assert result["radius_bias_mm"] == pytest.approx(0.5)
+    assert result["radius_correlation"] == pytest.approx(1.0)
+
+
+def test_radius_correlation_is_nan_for_constant_values():
+    result = radius_metrics([2.0, 2.0], [1.0, 2.0])
+    assert result["radius_correlation"] != result["radius_correlation"]
