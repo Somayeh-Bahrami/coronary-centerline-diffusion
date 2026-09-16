@@ -208,3 +208,31 @@ def test_sampler_rejects_invalid_prediction_type():
         sample_ddim(
             model, scheduler, images, poses, mask, "cpu",
             seed=31, n_steps=5, prediction_type="x0")
+
+
+def test_sampler_supports_eight_channel_branch_tokens():
+    model = ZeroDenoiser()
+    scheduler = NoiseScheduler(n_steps=20)
+    images, poses, mask = inputs()
+    initial = torch.randn(2, 6, 8) * mask.unsqueeze(-1)
+
+    sampled = sample_ddim(
+        model, scheduler, images, poses, mask, "cpu",
+        initial_noise=initial, n_steps=5)
+
+    assert sampled.shape == initial.shape
+    assert torch.equal(sampled[~mask], torch.zeros_like(sampled[~mask]))
+
+
+def test_sampler_supports_eight_channel_branch_tokens():
+    model = ZeroDenoiser()
+    scheduler = NoiseScheduler(n_steps=20)
+    images, poses, mask = inputs()
+    initial = torch.randn(2, 6, 8) * mask.unsqueeze(-1)
+
+    sampled = sample_ddim(
+        model, scheduler, images, poses, mask, "cpu",
+        initial_noise=initial, n_steps=5)
+
+    assert sampled.shape == initial.shape
+    assert torch.equal(sampled[~mask], torch.zeros_like(sampled[~mask]))

@@ -215,7 +215,7 @@ def compute_loss(
     mask = batch["centerline_mask"].to(device, non_blocking=True)
     images = batch["images"].to(device, non_blocking=True)
     poses = batch["poses"].to(device, non_blocking=True)
-    x0 = centerline[..., :4]
+    x0 = centerline[..., :4] if centerline.shape[-1] == 5 else centerline
     batch_size = x0.shape[0]
 
     if fixed_t is None and cond_drop_prob > 0.0:
@@ -517,7 +517,13 @@ def train(config, quick_test=False):
         generator=torch.Generator().manual_seed(seed + 1_000_000),
         **loader_kwargs)
 
-    raw_model = CenterlineDenoiser(hidden_dim=hidden_dim).to(device)
+    stored_node_dim = int(train_dataset[0]["centerline"].shape[-1])
+    node_dim = 4 if stored_node_dim == 5 else stored_node_dim
+    val_stored_node_dim = int(val_dataset[0]["centerline"].shape[-1])
+    if stored_node_dim not in (5, 8) or val_stored_node_dim != stored_node_dim:
+        raise RuntimeError("unsupported or inconsistent centerline representation")
+    raw_model = CenterlineDenoiser(
+        node_dim=node_dim, hidden_dim=hidden_dim).to(device)
     optimizer = torch.optim.Adam(
         raw_model.parameters(), lr=learning_rate, betas=(0.9, 0.99))
     noise_scheduler = NoiseScheduler(n_steps=1000, device=device)
@@ -527,6 +533,7 @@ def train(config, quick_test=False):
 
     run_signature = {
         "hidden_dim": hidden_dim,
+        "node_dim": node_dim,
         "batch_size": batch_size,
         "lr": learning_rate,
         "max_steps": max_steps,

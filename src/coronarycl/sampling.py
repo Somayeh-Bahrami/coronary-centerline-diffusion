@@ -84,20 +84,21 @@ def sample_ddim(
         mask_float = mask.unsqueeze(-1).to(dtype=images.dtype)
 
         if initial_noise is None:
+            node_dim = int(getattr(model, "node_dim", 4))
             generator = None
             if seed is not None:
                 generator = torch.Generator(device=torch.device(device))
                 generator.manual_seed(int(seed))
             x_t = torch.randn(
-                batch_size, n_points, 4,
+                batch_size, n_points, node_dim,
                 device=device, dtype=images.dtype, generator=generator)
         else:
             x_t = torch.as_tensor(
                 initial_noise, device=device, dtype=images.dtype)
-            if x_t.shape != (batch_size, n_points, 4):
+            if x_t.ndim != 3 or x_t.shape[:2] != (batch_size, n_points) or x_t.shape[-1] < 4:
                 raise ValueError(
-                    "initial_noise must have shape "
-                    f"{(batch_size, n_points, 4)}, got {tuple(x_t.shape)}")
+                    "initial_noise must have shape (B,N,C) with C >= 4, got "
+                    f"{tuple(x_t.shape)}")
             if not torch.isfinite(x_t).all():
                 raise ValueError("initial_noise must contain only finite values")
         x_t = x_t * mask_float
@@ -110,10 +111,10 @@ def sample_ddim(
             upper = _as_bound(x0_max, x_t)
             try:
                 torch.broadcast_shapes(
-                    x_t.shape, lower.shape, upper.shape)
+                    x_t[..., :4].shape, lower.shape, upper.shape)
             except RuntimeError as error:
                 raise ValueError(
-                    "x0 bounds are not broadcastable to (B,N,4)") from error
+                    "x0 bounds are not broadcastable to geometry channels (B,N,4)") from error
             if torch.any(lower >= upper):
                 raise ValueError("every x0_min must be smaller than x0_max")
             if not torch.isfinite(lower).all() or not torch.isfinite(upper).all():
@@ -147,8 +148,9 @@ def sample_ddim(
             x0_hat, epsilon = model_output_to_x0_epsilon(
                 x_t, model_output, alpha_t, prediction_type)
             if lower is not None:
-                x0_hat = torch.maximum(
-                    torch.minimum(x0_hat, upper), lower)
+                x0_hat = x0_hat.clone()
+                x0_hat[..., :4] = torch.maximum(
+                    torch.minimum(x0_hat[..., :4], upper), lower)
             x0_hat = x0_hat * mask_float
             x0_self = x0_hat[..., :3].detach()
 

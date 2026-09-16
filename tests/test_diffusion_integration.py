@@ -43,3 +43,18 @@ def test_images_and_nominal_poses_are_connected_to_valid_outputs():
     output[mask].square().mean().backward()
     assert images.grad is not None and images.grad.abs().sum() > 0
     assert poses.grad is not None and poses.grad.abs().sum() > 0
+
+
+def test_eight_channel_branch_tokens_forward_backward_and_padding():
+    model = CenterlineDenoiser(node_dim=8, hidden_dim=32, time_dim=16)
+    nodes, timesteps, images, poses, mask = small_inputs()
+    nodes = torch.cat([nodes, torch.randn(2, 11, 4)], dim=-1)
+    nodes[~mask] = 0.0
+
+    output = model(nodes, timesteps, images, poses, node_mask=mask)
+    loss = output[mask].square().mean()
+    loss.backward()
+
+    assert output.shape == nodes.shape
+    assert torch.equal(output[~mask], torch.zeros_like(output[~mask]))
+    assert all(parameter.grad is not None for parameter in model.parameters())

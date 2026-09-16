@@ -143,3 +143,55 @@ def test_resume_signature_defaults_old_checkpoint_to_epsilon():
         _validate_resume_signature(
             checkpoint, {"hidden_dim": 384, "prediction_type": "v"}
         )
+
+
+def test_compute_loss_uses_all_eight_branch_token_channels():
+    batch = _batch()
+    batch["centerline"] = torch.randn(2, 7, 8)
+    batch["centerline"][~batch["centerline_mask"]] = 0.0
+    scheduler = NoiseScheduler(n_steps=20)
+    timestep = 7
+    x0 = batch["centerline"]
+
+    torch.manual_seed(992)
+    noise = torch.randn_like(x0)
+    alpha_bar = scheduler.alpha_bars[
+        torch.full((x0.shape[0],), timestep, dtype=torch.long)
+    ]
+    target = training_target(x0, noise, alpha_bar, "epsilon")
+    expected = (
+        target.square().mean(dim=-1) * batch["centerline_mask"].float()
+    ).sum() / batch["centerline_mask"].sum()
+
+    torch.manual_seed(992)
+    actual = compute_loss(
+        _ZeroModel(), scheduler, batch, "cpu", fixed_t=timestep
+    )
+
+    torch.testing.assert_close(actual, expected)
+
+
+def test_compute_loss_uses_all_eight_branch_token_channels():
+    batch = _batch()
+    batch["centerline"] = torch.randn(2, 7, 8)
+    batch["centerline"][~batch["centerline_mask"]] = 0.0
+    scheduler = NoiseScheduler(n_steps=20)
+    timestep = 7
+    x0 = batch["centerline"]
+
+    torch.manual_seed(992)
+    noise = torch.randn_like(x0)
+    alpha_bar = scheduler.alpha_bars[
+        torch.full((x0.shape[0],), timestep, dtype=torch.long)
+    ]
+    target = training_target(x0, noise, alpha_bar, "epsilon")
+    expected = (
+        target.square().mean(dim=-1) * batch["centerline_mask"].float()
+    ).sum() / batch["centerline_mask"].sum()
+
+    torch.manual_seed(992)
+    actual = compute_loss(
+        _ZeroModel(), scheduler, batch, "cpu", fixed_t=timestep
+    )
+
+    torch.testing.assert_close(actual, expected)
