@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cond_sensitivity import (
     build_donor_map,
+    checkpoint_node_dim,
     masked_mse_per_sample,
     sample_parts,
 )
@@ -34,3 +35,8 @@ def test_masked_mse_is_reduced_per_sample_not_per_batch():
     mask = torch.tensor([[True, True, False], [True, False, False]])
     loss = masked_mse_per_sample(prediction, target, mask)
     torch.testing.assert_close(loss, torch.tensor([1.0, 4.0]))
+
+
+def test_checkpoint_node_dim_defaults_legacy_and_reads_stage2():
+    assert checkpoint_node_dim({"run_signature": {}}) == 4
+    assert checkpoint_node_dim({"run_signature": {"node_dim": 8}}) == 8
