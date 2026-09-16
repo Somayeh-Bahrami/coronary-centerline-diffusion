@@ -33,7 +33,8 @@ import torch
 import yaml
 
 REPO_URL = "https://github.com/Somayeh-Bahrami/coronary-centerline-diffusion"
-EXPECTED_COMMIT = "3c6fd8c"
+# This revision fixes the direct-CLI ordering in ddim_eval.py.
+EXPECTED_COMMIT = "121ea526f5307510b38e5719d9cefa38c4ae7dce"
 EXPECTED_SAMPLES = 1694
 EXPECTED_SPLITS = {"train": 1350, "val": 177, "test": 167}
 EXPECTED_JSON_HASHES = {
@@ -154,8 +155,11 @@ if not (REPO / ".git").is_dir():
     run_stream(["git", "clone", REPO_URL, REPO], LOG_ROOT / "clone.log")
     run_stream(["git", "checkout", "--detach", EXPECTED_COMMIT], LOG_ROOT / "checkout.log", cwd=REPO)
 head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip()
-assert head.startswith(EXPECTED_COMMIT)
+assert head == EXPECTED_COMMIT, (head, EXPECTED_COMMIT)
 assert not subprocess.check_output(["git", "status", "--porcelain"], cwd=REPO, text=True).strip()
+
+# A fresh pinned clone must be syntactically valid before any expensive stage.
+compile((REPO / "ddim_eval.py").read_text(), str(REPO / "ddim_eval.py"), "exec")
 
 run_stream([sys.executable, "-m", "pip", "install", "-q", "--no-cache-dir",
             "marimo", "scipy", "nibabel", "scikit-image", "tqdm", "matplotlib",
