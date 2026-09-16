@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
@@ -12,6 +13,8 @@ from src.coronarycl.trainer import (
     _make_lr_scheduler,
     _validate_resume_signature,
     compute_loss,
+    _select_sample_ids,
+    _resolve_train_val_ids,
 )
 from src.coronarycl.prediction import training_target
 
@@ -195,3 +198,24 @@ def test_compute_loss_uses_all_eight_branch_token_channels():
     )
 
     torch.testing.assert_close(actual, expected)
+
+
+def test_select_sample_ids_rejects_wrong_split_and_keeps_requested_order(tmp_path):
+    np.savez(tmp_path / "1000_LCA.npz", split=np.asarray("train"))
+    np.savez(tmp_path / "101_LCA.npz", split=np.asarray("val"))
+
+    assert _select_sample_ids(tmp_path, "train", ["1000_LCA"]) == ["1000_LCA"]
+    with pytest.raises(ValueError, match="not in split"):
+        _select_sample_ids(tmp_path, "train", ["101_LCA"])
+
+
+def test_overfit_sample_is_the_only_train_and_validation_case(tmp_path):
+    np.savez(tmp_path / "1000_LCA.npz", split=np.asarray("train"))
+    np.savez(tmp_path / "101_LCA.npz", split=np.asarray("val"))
+
+    train_ids, val_ids = _resolve_train_val_ids(
+        tmp_path, {"overfit_sample_id": "1000_LCA"}
+    )
+
+    assert train_ids == ["1000_LCA"]
+    assert val_ids == ["1000_LCA"]

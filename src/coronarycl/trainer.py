@@ -203,6 +203,37 @@ def _file_fingerprint(path):
     return digest.hexdigest()
 
 
+
+def _select_sample_ids(packaged_dir, split, requested):
+    available = list_samples(packaged_dir, split)
+    if requested is None:
+        return available
+    selected = [str(sample) for sample in requested]
+    if not selected or len(selected) != len(set(selected)):
+        raise ValueError(f"{split}_sample_ids must be non-empty and unique")
+    missing = [sample for sample in selected if sample not in set(available)]
+    if missing:
+        raise ValueError(f"requested samples are not in split={split}: {missing}")
+    return selected
+
+
+
+def _resolve_train_val_ids(packaged_dir, data_cfg):
+    overfit_sample_id = data_cfg.get("overfit_sample_id")
+    if overfit_sample_id is not None:
+        if data_cfg.get("train_sample_ids") is not None or data_cfg.get("val_sample_ids") is not None:
+            raise ValueError("overfit_sample_id cannot be combined with sample-id selectors")
+        train_ids = _select_sample_ids(
+            packaged_dir, "train", [str(overfit_sample_id)])
+        return train_ids, list(train_ids)
+    return (
+        _select_sample_ids(
+            packaged_dir, "train", data_cfg.get("train_sample_ids")),
+        _select_sample_ids(
+            packaged_dir, "val", data_cfg.get("val_sample_ids")),
+    )
+
+
 def compute_loss(
     model, scheduler, batch, device, fixed_t=None,
     cond_drop_prob=0.0, self_cond_p=0.5, return_parts=False,
@@ -487,8 +518,7 @@ def train(config, quick_test=False):
         milestone_dir.mkdir(exist_ok=True)
 
     packaged_dir = data_cfg.get("packaged_dir", "data/processed/ds105_full")
-    train_ids = list_samples(packaged_dir, "train")
-    val_ids = list_samples(packaged_dir, "val")
+    train_ids, val_ids = _resolve_train_val_ids(packaged_dir, data_cfg)
     if quick_test:
         train_ids, val_ids = train_ids[:20], val_ids[:4]
 
