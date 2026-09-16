@@ -366,6 +366,7 @@ def _checkpoint_payload(
         "early_stop_reference": float(early_stop_reference),
         "checks_since_improvement": int(checks_since_improvement),
         "hidden_dim": int(run_signature["hidden_dim"]),
+        "node_dim": int(run_signature["node_dim"]),
         "prediction_type": run_signature["prediction_type"],
         "history": history,
         "rng_state": _rng_state(),
@@ -766,6 +767,7 @@ def train(config, quick_test=False):
                 "step": int(step),
                 "val_loss": last_val_loss,
                 "hidden_dim": hidden_dim,
+                "node_dim": node_dim,
                 "run_signature": run_signature,
             }
             _atomic_torch_save(

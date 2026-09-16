@@ -130,15 +130,17 @@ def stable_sample_seed(base_seed, sample_id):
     return int.from_bytes(digest[:8], "little") % (2**63 - 1)
 
 
-def initial_noise(items, n_points, base_seed, device):
+def initial_noise(items, n_points, base_seed, device, *, node_dim=4):
     """Per-sample noise independent of batching and sample ordering."""
-    noise = torch.zeros(len(items), n_points, 4, device=device)
+    if int(node_dim) < 4:
+        raise ValueError("node_dim must be at least 4")
+    noise = torch.zeros(len(items), n_points, int(node_dim), device=device)
     for index, item in enumerate(items):
         generator = torch.Generator(device=torch.device(device))
         generator.manual_seed(stable_sample_seed(base_seed, item["sample"]))
         count = int(item["n_points"])
         noise[index, :count] = torch.randn(
-            count, 4, generator=generator, device=device)
+            count, int(node_dim), generator=generator, device=device)
     return noise
 
 
@@ -438,8 +440,9 @@ def main():
         checkpoint = torch.load(
             args.ckpt, map_location="cpu", weights_only=True)
         prediction_type = checkpoint_prediction_type(checkpoint)
+        node_dim = checkpoint_node_dim(checkpoint)
         model = CenterlineDenoiser(
-            hidden_dim=int(checkpoint["hidden_dim"])).to(device)
+            node_dim=node_dim, hidden_dim=int(checkpoint["hidden_dim"])).to(device)
         model.load_state_dict(checkpoint["model"], strict=True)
         model.eval()
         scheduler = NoiseScheduler(n_steps=1000, device=device)
@@ -447,6 +450,7 @@ def main():
             "path": str(args.ckpt.expanduser().resolve()),
             "sha256": file_sha256(args.ckpt),
             "hidden_dim": int(checkpoint["hidden_dim"]),
+            "node_dim": node_dim,
             "step": int(checkpoint["step"]),
             "val_loss": checkpoint.get("val_loss"),
             "prediction_type": prediction_type,
@@ -483,7 +487,7 @@ def main():
                 for index, count in enumerate(counts):
                     mask[index, :count] = True
                 noise = initial_noise(
-                    items, padded_count, seed, device)
+                    items, padded_count, seed, device, node_dim=node_dim)
                 lower = upper = None
                 if args.bounds == "physical":
                     lower, upper = normalized_physical_bounds(
@@ -570,3 +574,21 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def checkpoint_node_dim(checkpoint):
+    """Read the frozen denoiser channel count, defaulting legacy checkpoints to 4."""
+    direct = checkpoint.get("node_dim")
+    signed = checkpoint.get("run_signature", {}).get("node_dim")
+    if direct is not None and signed is not None and int(direct) != int(signed):
+        raise RuntimeError("checkpoint node_dim is inconsistent with run_signature")
+    value = int(direct if direct is not None else (signed if signed is not None else 4))
+    if value not in (4, 8):
+        raise ValueError(f"unsupported checkpoint node_dim={value}")
+    return value
+
+
+def decoded_topology_edges(tokens, mask, *, token_capacity):
+    """Recover topology solely from predicted branch tokens and valid-node mask."""
+    from src.coronarycl.branch_token_tree import decode_branch_tokens
+    return decode_branch_tokens(tokens, mask, token_capacity=token_capacity)

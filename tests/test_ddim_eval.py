@@ -1,6 +1,14 @@
 import pytest
 
-from ddim_eval import checkpoint_prediction_type, edge_cache_file, radius_metrics
+from ddim_eval import (
+    checkpoint_node_dim,
+    checkpoint_prediction_type,
+    decoded_topology_edges,
+    edge_cache_file,
+    initial_noise,
+    radius_metrics,
+)
+from src.coronarycl.branch_token_tree import encode_branch_tokens
 
 
 def test_legacy_checkpoint_defaults_to_epsilon():
@@ -61,3 +69,34 @@ def test_radius_metrics_report_physical_errors_and_correlation():
 def test_radius_correlation_is_nan_for_constant_values():
     result = radius_metrics([2.0, 2.0], [1.0, 2.0])
     assert result["radius_correlation"] != result["radius_correlation"]
+
+
+def test_checkpoint_node_dim_uses_frozen_run_signature():
+    assert checkpoint_node_dim({"run_signature": {"node_dim": 8}}) == 8
+    assert checkpoint_node_dim({"run_signature": {}}) == 4
+
+
+def test_decoded_topology_edges_never_accepts_oracle_edges():
+    capacity, n = 8, 6
+    centerline = __import__("numpy").zeros((capacity, 5), dtype="float32")
+    mask = __import__("numpy").array([True] * n + [False] * 2)
+    expected = __import__("numpy").array(
+        [[0, 1], [1, 2], [1, 3], [3, 4], [3, 5]], dtype="int32"
+    )
+    tokens = encode_branch_tokens(centerline, mask, expected)
+
+    actual = decoded_topology_edges(tokens[:n], mask[:n], token_capacity=capacity)
+
+    assert {tuple(sorted(map(int, edge))) for edge in actual} == {
+        tuple(sorted(map(int, edge))) for edge in expected
+    }
+
+
+def test_initial_noise_preserves_seed_and_supports_eight_channels():
+    items = [{"sample": "fixture", "n_points": 3}]
+    first = initial_noise(items, 5, 17, "cpu", node_dim=8)
+    second = initial_noise(items, 5, 17, "cpu", node_dim=8)
+
+    assert first.shape == (1, 5, 8)
+    assert __import__("torch").equal(first, second)
+    assert __import__("torch").count_nonzero(first[:, 3:]) == 0
