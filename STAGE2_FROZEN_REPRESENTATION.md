@@ -55,3 +55,10 @@ explicitly labelled given/oracle-GT-topology definition for both paired arms.
 This preserves the frozen metric definition and a comparable DFS baseline.
 The EBT decoder is tested and reported separately as inference without
 ground-truth topology; ground-truth edges are never an input to that decoder.
+
+## Frozen single-case overfit gate
+Use only TRAIN sample `1000_LCA` as both the training and validation case.
+Run exactly 1,000 optimizer steps from random initialization. Keep the frozen
+optimizer, learning rate, conditioning, epsilon target, and precision settings.
+Pass requires finite loss throughout and the step-1,000 training loss to be
+strictly lower than the first logged training loss. TEST is never read.
