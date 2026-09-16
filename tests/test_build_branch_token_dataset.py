@@ -41,4 +41,5 @@ def test_transform_preserves_non_centerline_fields_and_builds_decodable_tokens()
     assert np.array_equal(output["images"], source["images"])
     assert np.array_equal(output["poses"], source["poses"])
     assert row["representation_version"] == "explicit_branch_token_tree_v1"
+    assert row["token_capacity"] == capacity
     assert _edges(decode_branch_tokens(output["centerline"], mask)) == _edges(edges)

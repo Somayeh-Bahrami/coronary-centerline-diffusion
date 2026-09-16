@@ -44,3 +44,21 @@ def test_decoder_discards_unresolvable_branch_and_keeps_root_component():
     decoded_edges = decode_branch_tokens(tokens, mask)
 
     assert _edge_set(decoded_edges) == {(0, 1), (1, 3), (3, 4), (3, 5)}
+
+
+def test_decoder_uses_frozen_dataset_capacity_under_dynamic_padding():
+    source_capacity, n = 8, 6
+    centerline = np.zeros((source_capacity, 5), dtype=np.float32)
+    mask = np.ones(n, dtype=bool)
+    edges = np.array([[0, 1], [1, 2], [1, 3], [3, 4], [3, 5]], dtype=np.int32)
+
+    full_tokens = encode_branch_tokens(
+        centerline, np.array([True] * n + [False] * 2), edges
+    )
+    runtime_tokens = full_tokens[:n]  # evaluator trims to dynamic batch length
+
+    decoded_edges = decode_branch_tokens(
+        runtime_tokens, mask, token_capacity=source_capacity
+    )
+
+    assert _edge_set(decoded_edges) == _edge_set(edges)

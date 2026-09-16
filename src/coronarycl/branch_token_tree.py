@@ -80,7 +80,7 @@ def encode_branch_tokens(centerline, mask, edges):
     return out
 
 
-def decode_branch_tokens(tokens, mask):
+def decode_branch_tokens(tokens, mask, *, token_capacity=None):
     """Recover edges solely from decoded tokens and the valid-node mask."""
     tokens = np.asarray(tokens)
     mask = np.asarray(mask, dtype=bool)
@@ -90,7 +90,10 @@ def decode_branch_tokens(tokens, mask):
     if n < 1 or not mask[:n].all() or mask[n:].any():
         raise ValueError("valid-node mask must be a non-empty contiguous prefix")
 
-    scale = max(1, len(mask) - 1)
+    capacity = len(mask) if token_capacity is None else int(token_capacity)
+    if capacity < n:
+        raise ValueError("token_capacity cannot be smaller than valid-node count")
+    scale = max(1, capacity - 1)
     labels = np.rint(tokens[:n, 4:] * scale).astype(np.int64)
     groups = {}
     for node, (branch_id, parent_id, attach_index, within_index) in enumerate(labels):

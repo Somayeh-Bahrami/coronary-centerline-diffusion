@@ -60,6 +60,7 @@ def transform_sample(source_arrays, edges, sample):
         "sample": sample,
         "split": str(source_arrays["split"]),
         "n_nodes": n,
+        "token_capacity": int(len(mask)),
         "representation_version": REPRESENTATION_VERSION,
     }
 
@@ -109,9 +110,14 @@ def main():
         for path in metadata_dir.glob("*.json"):
             shutil.copy2(path, tmp_out / path.name)
         shutil.copy2(cache, tmp_edges / "edges_v1.npz")
+        token_capacities = {row["token_capacity"] for row in rows}
+        if len(token_capacities) != 1:
+            raise AssertionError("derived dataset has inconsistent token capacities")
+        token_capacity = token_capacities.pop()
         manifest = {
             "schema_version": "branch_token_dataset_v1",
             "representation_version": REPRESENTATION_VERSION,
+            "token_capacity": token_capacity,
             "source_dataset": str(source),
             "source_edge_cache_sha256": sha256_file(cache),
             "source_edge_cache_metadata": edge_meta,
