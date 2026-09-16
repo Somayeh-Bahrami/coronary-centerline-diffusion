@@ -572,10 +572,6 @@ def main():
         print(f"wrote {args.save_pred}")
 
 
-if __name__ == "__main__":
-    main()
-
-
 def checkpoint_node_dim(checkpoint):
     """Read the frozen denoiser channel count, defaulting legacy checkpoints to 4."""
     direct = checkpoint.get("node_dim")
@@ -592,3 +588,7 @@ def decoded_topology_edges(tokens, mask, *, token_capacity):
     """Recover topology solely from predicted branch tokens and valid-node mask."""
     from src.coronarycl.branch_token_tree import decode_branch_tokens
     return decode_branch_tokens(tokens, mask, token_capacity=token_capacity)
+
+
+if __name__ == "__main__":
+    main()

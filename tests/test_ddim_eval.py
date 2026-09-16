@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 
 from ddim_eval import (
     checkpoint_node_dim,
@@ -100,3 +101,11 @@ def test_initial_noise_preserves_seed_and_supports_eight_channels():
     assert first.shape == (1, 5, 8)
     assert __import__("torch").equal(first, second)
     assert __import__("torch").count_nonzero(first[:, 3:]) == 0
+
+
+def test_cli_entrypoint_is_after_every_helper_used_by_main():
+    """Running `python ddim_eval.py ...` must define helpers before main()."""
+    source = (Path(__file__).resolve().parents[1] / "ddim_eval.py").read_text()
+    entrypoint = source.rindex('if __name__ == "__main__":')
+    assert entrypoint > source.index("def checkpoint_node_dim")
+    assert entrypoint > source.index("def decoded_topology_edges")
