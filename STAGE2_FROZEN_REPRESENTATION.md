@@ -48,3 +48,10 @@ The existing architecture, epsilon target, optimizer, schedule, batch size,
 50k endpoint, conditioning, precision, DDIM sampler, guidance, five validation
 seeds, and locked TEST split are unchanged. No alternative Stage 2
 representation will be evaluated.
+
+## Frozen metric interpretation
+The preregistered continuity, LCC, and tree-length metrics retain the existing
+explicitly labelled given/oracle-GT-topology definition for both paired arms.
+This preserves the frozen metric definition and a comparable DFS baseline.
+The EBT decoder is tested and reported separately as inference without
+ground-truth topology; ground-truth edges are never an input to that decoder.
