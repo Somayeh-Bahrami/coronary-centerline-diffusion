@@ -6,7 +6,7 @@ Method name: Explicit Branch-Token Tree Representation (EBT)
 Each valid output row represents one coronary node:
 [x, y, z, radius, branch_id, parent_branch_id, parent_attach_index, within_branch_index].
 
-For a sample with padded capacity M, encode branch_id, parent_branch_id,
+Let M be the single frozen padded row capacity of the derived dataset; it is recorded in the dataset manifest and is used at training and inference regardless of dynamic batch padding. Encode branch_id, parent_branch_id,
 parent_attach_index, and within_branch_index as their non-negative integer value
 divided by (M - 1). Branch IDs are 1..B; 0 is reserved for no-parent.
 At inference, multiply by (M - 1), round to the nearest integer, then decode.
