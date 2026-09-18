@@ -116,6 +116,18 @@ def file_sha256(path):
     return digest.hexdigest()
 
 
+
+def checkpoint_node_dim(checkpoint):
+    direct = checkpoint.get("node_dim")
+    signed = checkpoint.get("run_signature", {}).get("node_dim")
+    if direct is not None and signed is not None and int(direct) != int(signed):
+        raise RuntimeError("checkpoint node_dim is inconsistent with run_signature")
+    value = int(direct if direct is not None else (signed if signed is not None else 4))
+    if value not in (4, 8):
+        raise ValueError(f"unsupported checkpoint node_dim={value}")
+    return value
+
+
 def masked_mse_per_sample(prediction, target, mask):
     per_point = (prediction.float() - target.float()).square().mean(dim=-1)
     weights = mask.to(per_point.dtype)
@@ -138,7 +150,8 @@ def evaluate_checkpoint(
     checkpoint = torch.load(
         checkpoint_path, map_location="cpu", weights_only=True)
     hidden_dim = int(checkpoint["hidden_dim"])
-    model = model_class(hidden_dim=hidden_dim).to(device)
+    node_dim = checkpoint_node_dim(checkpoint)
+    model = model_class(node_dim=node_dim, hidden_dim=hidden_dim).to(device)
     model.load_state_dict(checkpoint["model"], strict=True)
     model.eval()
     scheduler = scheduler_class(n_steps=1000, device=device)
@@ -153,7 +166,7 @@ def evaluate_checkpoint(
             targets = list(range(start, min(start + batch_size, len(items))))
             donor_indices = [donors[index] for index in targets]
             centerline = torch.stack(
-                [items[i]["centerline"][..., :4] for i in targets]).to(device)
+                [items[i]["centerline"][..., :node_dim] for i in targets]).to(device)
             mask = torch.stack(
                 [items[i]["centerline_mask"] for i in targets]).to(device)
             images = torch.stack(
@@ -209,6 +222,7 @@ def evaluate_checkpoint(
         "path": str(checkpoint_path),
         "sha256": file_sha256(checkpoint_path),
         "hidden_dim": hidden_dim,
+        "node_dim": node_dim,
         "step": int(checkpoint["step"]),
         "val_loss": checkpoint.get("val_loss"),
     }

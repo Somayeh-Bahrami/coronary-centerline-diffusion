@@ -26,9 +26,11 @@ sys.path.insert(0, str(REPO))
 
 from src.coronarycl.dataset_v3_1 import (  # noqa: E402
     CoronaryCenterlineDatasetV31, list_samples)
+from src.coronarycl.edge_coherence import load_edge_cache  # noqa: E402
 from src.coronarycl.metrics import (  # noqa: E402
-    crop_bounds_mm, evaluate_case, topology_tree_edges)
+    crop_bounds_mm, evaluate_case)
 from src.coronarycl.models.diffusion import CenterlineDenoiser  # noqa: E402
+from src.coronarycl.prediction import validate_prediction_type  # noqa: E402
 from src.coronarycl.sampling import sample_ddim  # noqa: E402
 from src.coronarycl.trainer import NoiseScheduler  # noqa: E402
 
@@ -51,6 +53,9 @@ METRIC_KEYS = [
     "mean_crop_excess_mm",
     "max_crop_excess_mm",
     "radius_mae_mm",
+    "radius_rmse_mm",
+    "radius_bias_mm",
+    "radius_correlation",
     "radius_out_of_train_range_fraction",
 ]
 
@@ -63,6 +68,10 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt", type=Path)
     parser.add_argument("--data", type=Path, required=True)
+    parser.add_argument(
+        "--edge-cache", type=Path, required=True,
+        help=("canonical graph cache for this exact dataset ordering; "
+              "topology is never reconstructed from denormalized coordinates"))
     parser.add_argument(
         "--split", choices=("val", "test", "train"), default="val")
     parser.add_argument("--steps", type=int, default=50)
@@ -94,20 +103,44 @@ def file_sha256(path):
     return digest.hexdigest()
 
 
+def edge_cache_file(path):
+    """Resolve a cache directory or direct NPZ path without guessing silently."""
+    path = Path(path).expanduser().resolve()
+    if path.is_dir():
+        path = path / "edges_v1.npz"
+    if not path.is_file():
+        raise FileNotFoundError(f"canonical edge cache not found: {path}")
+    return path
+
+
+def checkpoint_prediction_type(checkpoint):
+    """Read an unambiguous prediction type; legacy checkpoints use epsilon."""
+    top_level = checkpoint.get("prediction_type")
+    signature = checkpoint.get("run_signature") or {}
+    signed = signature.get("prediction_type")
+    if top_level is not None and signed is not None and top_level != signed:
+        raise RuntimeError(
+            "Checkpoint prediction_type is inconsistent: "
+            f"top-level={top_level!r}, run_signature={signed!r}")
+    return validate_prediction_type(top_level or signed or "epsilon")
+
+
 def stable_sample_seed(base_seed, sample_id):
     digest = hashlib.sha256(f"{base_seed}:{sample_id}".encode()).digest()
     return int.from_bytes(digest[:8], "little") % (2**63 - 1)
 
 
-def initial_noise(items, n_points, base_seed, device):
+def initial_noise(items, n_points, base_seed, device, *, node_dim=4):
     """Per-sample noise independent of batching and sample ordering."""
-    noise = torch.zeros(len(items), n_points, 4, device=device)
+    if int(node_dim) < 4:
+        raise ValueError("node_dim must be at least 4")
+    noise = torch.zeros(len(items), n_points, int(node_dim), device=device)
     for index, item in enumerate(items):
         generator = torch.Generator(device=torch.device(device))
         generator.manual_seed(stable_sample_seed(base_seed, item["sample"]))
         count = int(item["n_points"])
         noise[index, :count] = torch.randn(
-            count, 4, generator=generator, device=device)
+            count, int(node_dim), generator=generator, device=device)
     return noise
 
 
@@ -174,6 +207,29 @@ def mean_shape_templates(data_dir, count=256):
         for vessel, curves in accumulated.items()}
 
 
+def radius_metrics(predicted, ground_truth):
+    """Point-corresponded physical-radius errors for one ordered sample."""
+    predicted = np.asarray(predicted, dtype=np.float64)
+    ground_truth = np.asarray(ground_truth, dtype=np.float64)
+    if predicted.shape != ground_truth.shape or predicted.ndim != 1:
+        raise ValueError("radius arrays must be one-dimensional with equal shape")
+    if (len(predicted) == 0 or not np.isfinite(predicted).all()
+            or not np.isfinite(ground_truth).all()):
+        raise ValueError("radius arrays must be non-empty and finite")
+    error = predicted - ground_truth
+    correlation = (
+        float("nan")
+        if np.std(predicted) == 0 or np.std(ground_truth) == 0
+        else float(np.corrcoef(predicted, ground_truth)[0, 1])
+    )
+    return {
+        "radius_mae_mm": float(np.mean(np.abs(error))),
+        "radius_rmse_mm": float(np.sqrt(np.mean(error ** 2))),
+        "radius_bias_mm": float(np.mean(error)),
+        "radius_correlation": correlation,
+    }
+
+
 def _metric_row(
     item, seed, pred_mm, gt_mm, radius_bounds, edges, lower, upper,
 ):
@@ -182,9 +238,8 @@ def _metric_row(
         pred_xyz, gt_xyz, thresholds=(1.0, 2.0, 5.0),
         edges=edges, xyz_lower_mm=lower, xyz_upper_mm=upper)
     pred_radius = pred_mm[:, 3]
+    metrics.update(radius_metrics(pred_radius, gt_mm[:, 3]))
     metrics.update({
-        "radius_mae_mm": float(np.mean(
-            np.abs(pred_radius - gt_mm[:, 3]))),
         "radius_out_of_train_range_fraction": float(np.mean(
             (pred_radius < radius_bounds[0])
             | (pred_radius > radius_bounds[1]))),
@@ -253,7 +308,9 @@ def aggregate_rows(rows, bootstrap_repeats):
     headline = [
         "chamfer_l2", "hd95_mm", "overlap@2.0mm",
         "edge_continuity_5x", "largest_connected_component_fraction_5x",
-        "tree_length_ratio", "out_of_crop_fraction"]
+        "tree_length_ratio", "out_of_crop_fraction",
+        "radius_mae_mm", "radius_rmse_mm", "radius_bias_mm",
+        "radius_correlation"]
     patient_ci = {}
     for key in headline:
         per_patient = np.asarray([
@@ -307,6 +364,7 @@ def _print_summary(summary):
 def main():
     args = parse_args()
     args.data = args.data.expanduser().resolve()
+    args.edge_cache = edge_cache_file(args.edge_cache)
     args.out = args.out.expanduser().resolve()
     if args.ckpt:
         args.ckpt = args.ckpt.expanduser().resolve()
@@ -347,6 +405,10 @@ def main():
         sample_ids = sample_ids[:args.limit]
     dataset = CoronaryCenterlineDatasetV31(
         args.data, sample_ids=sample_ids, return_render_poses=False)
+    canonical_edges, edge_metadata = load_edge_cache(
+        args.edge_cache, args.data, required_ids=sample_ids)
+    if int(edge_metadata["n_verified"]) != len(sample_ids):
+        raise RuntimeError("canonical edge cache was not verified for every sample")
     cached_items = [dataset[index] for index in range(len(dataset))]
     order = sorted(
         range(len(sample_ids)),
@@ -356,7 +418,7 @@ def main():
         count = int(item["n_points"])
         gt_mm = dataset.denormalize(
             item["centerline"].numpy())[:count, :4]
-        edges = topology_tree_edges(gt_mm[:, :3], item["iso_mm"])
+        edges = np.asarray(canonical_edges[item["sample"]], dtype=np.int64)
         if len(edges) != count - 1:
             raise RuntimeError(
                 f"{item['sample']}: GT neighbour graph has {len(edges)} "
@@ -366,17 +428,21 @@ def main():
         metric_context[item["sample"]] = (gt_mm, edges, lower, upper)
     print(
         f"split={args.split}; samples={len(sample_ids)}; seeds={seeds}; "
-        f"radius TRAIN range={radius_bounds[0]:.3f}..{radius_bounds[1]:.3f} mm")
+        f"radius TRAIN range={radius_bounds[0]:.3f}..{radius_bounds[1]:.3f} mm; "
+        f"canonical edges verified={edge_metadata['n_verified']}")
 
     model = checkpoint = scheduler = None
     checkpoint_metadata = None
+    prediction_type = None
     if args.mean_shape:
         templates = mean_shape_templates(args.data)
     else:
         checkpoint = torch.load(
             args.ckpt, map_location="cpu", weights_only=True)
+        prediction_type = checkpoint_prediction_type(checkpoint)
+        node_dim = checkpoint_node_dim(checkpoint)
         model = CenterlineDenoiser(
-            hidden_dim=int(checkpoint["hidden_dim"])).to(device)
+            node_dim=node_dim, hidden_dim=int(checkpoint["hidden_dim"])).to(device)
         model.load_state_dict(checkpoint["model"], strict=True)
         model.eval()
         scheduler = NoiseScheduler(n_steps=1000, device=device)
@@ -384,9 +450,12 @@ def main():
             "path": str(args.ckpt.expanduser().resolve()),
             "sha256": file_sha256(args.ckpt),
             "hidden_dim": int(checkpoint["hidden_dim"]),
+            "node_dim": node_dim,
             "step": int(checkpoint["step"]),
             "val_loss": checkpoint.get("val_loss"),
+            "prediction_type": prediction_type,
         }
+        print(f"checkpoint prediction_type={prediction_type}")
 
     rows = []
     prediction_archive = {}
@@ -418,7 +487,7 @@ def main():
                 for index, count in enumerate(counts):
                     mask[index, :count] = True
                 noise = initial_noise(
-                    items, padded_count, seed, device)
+                    items, padded_count, seed, device, node_dim=node_dim)
                 lower = upper = None
                 if args.bounds == "physical":
                     lower, upper = normalized_physical_bounds(
@@ -428,7 +497,8 @@ def main():
                         model, scheduler, images, poses, mask, device,
                         initial_noise=noise, n_steps=args.steps,
                         guidance_scale=args.guidance,
-                        x0_min=lower, x0_max=upper)
+                        x0_min=lower, x0_max=upper,
+                        prediction_type=prediction_type)
                 denormalized = dataset.denormalize(
                     normalized.float().cpu().numpy())
                 predictions_mm = [
@@ -474,8 +544,12 @@ def main():
             "bounds": args.bounds,
             "radius_bounds_mm_from_train": list(radius_bounds),
             "precision": args.precision,
+            "prediction_type": prediction_type,
             "n_points_source": "ground truth",
             "topology_metrics": "given/oracle GT topology",
+            "topology_edge_source": "canonical edge cache",
+            "topology_edge_cache": str(args.edge_cache),
+            "topology_edge_cache_sha256": file_sha256(args.edge_cache),
             "chamfer_convention": (
                 "mean(pred->gt)+mean(gt->pred), Euclidean, unsquared"),
             "aggregation": (
@@ -496,6 +570,24 @@ def main():
         args.save_pred.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(args.save_pred, **prediction_archive)
         print(f"wrote {args.save_pred}")
+
+
+def checkpoint_node_dim(checkpoint):
+    """Read the frozen denoiser channel count, defaulting legacy checkpoints to 4."""
+    direct = checkpoint.get("node_dim")
+    signed = checkpoint.get("run_signature", {}).get("node_dim")
+    if direct is not None and signed is not None and int(direct) != int(signed):
+        raise RuntimeError("checkpoint node_dim is inconsistent with run_signature")
+    value = int(direct if direct is not None else (signed if signed is not None else 4))
+    if value not in (4, 8):
+        raise ValueError(f"unsupported checkpoint node_dim={value}")
+    return value
+
+
+def decoded_topology_edges(tokens, mask, *, token_capacity):
+    """Recover topology solely from predicted branch tokens and valid-node mask."""
+    from src.coronarycl.branch_token_tree import decode_branch_tokens
+    return decode_branch_tokens(tokens, mask, token_capacity=token_capacity)
 
 
 if __name__ == "__main__":

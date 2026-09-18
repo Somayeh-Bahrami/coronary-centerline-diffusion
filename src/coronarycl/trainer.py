@@ -29,12 +29,17 @@ from torch.utils.data import DataLoader, Sampler
 from .config import resolve_device
 from .dataset_v3_1 import CoronaryCenterlineDatasetV31, list_samples
 from .models.diffusion import CenterlineDenoiser
-from .edge_coherence import EdgeCollate, load_edge_cache, x0_from_eps
+from .edge_coherence import EdgeCollate, load_edge_cache
 from .edge_coherence_grouped import edge_coherence_loss
+from .prediction import (
+    model_output_to_x0_epsilon,
+    training_target,
+    validate_prediction_type,
+)
 
 EVAL_TIMESTEPS = [0, 250, 500, 750, 999]
 EVAL_SEED = 12345
-CHECKPOINT_VERSION = 3
+CHECKPOINT_VERSION = 4
 
 
 class NoiseScheduler:
@@ -198,18 +203,50 @@ def _file_fingerprint(path):
     return digest.hexdigest()
 
 
+
+def _select_sample_ids(packaged_dir, split, requested):
+    available = list_samples(packaged_dir, split)
+    if requested is None:
+        return available
+    selected = [str(sample) for sample in requested]
+    if not selected or len(selected) != len(set(selected)):
+        raise ValueError(f"{split}_sample_ids must be non-empty and unique")
+    missing = [sample for sample in selected if sample not in set(available)]
+    if missing:
+        raise ValueError(f"requested samples are not in split={split}: {missing}")
+    return selected
+
+
+
+def _resolve_train_val_ids(packaged_dir, data_cfg):
+    overfit_sample_id = data_cfg.get("overfit_sample_id")
+    if overfit_sample_id is not None:
+        if data_cfg.get("train_sample_ids") is not None or data_cfg.get("val_sample_ids") is not None:
+            raise ValueError("overfit_sample_id cannot be combined with sample-id selectors")
+        train_ids = _select_sample_ids(
+            packaged_dir, "train", [str(overfit_sample_id)])
+        return train_ids, list(train_ids)
+    return (
+        _select_sample_ids(
+            packaged_dir, "train", data_cfg.get("train_sample_ids")),
+        _select_sample_ids(
+            packaged_dir, "val", data_cfg.get("val_sample_ids")),
+    )
+
+
 def compute_loss(
     model, scheduler, batch, device, fixed_t=None,
     cond_drop_prob=0.0, self_cond_p=0.5, return_parts=False,
     coh_weight=0.0, coh_kwargs=None, return_coh=False,
-    detach_parts=True,
+    detach_parts=True, prediction_type="epsilon",
 ):
-    """Masked epsilon-MSE; optionally return numerator and node count."""
+    """Masked diffusion-target MSE with an optional coherence term."""
+    prediction_type = validate_prediction_type(prediction_type)
     centerline = batch["centerline"].to(device, non_blocking=True)
     mask = batch["centerline_mask"].to(device, non_blocking=True)
     images = batch["images"].to(device, non_blocking=True)
     poses = batch["poses"].to(device, non_blocking=True)
-    x0 = centerline[..., :4]
+    x0 = centerline[..., :4] if centerline.shape[-1] == 5 else centerline
     batch_size = x0.shape[0]
 
     if fixed_t is None and cond_drop_prob > 0.0:
@@ -225,6 +262,7 @@ def compute_loss(
         torch.full((batch_size,), int(fixed_t), dtype=torch.long, device=device)
     )
     noisy, true_noise = scheduler.add_noise(x0, timesteps)
+    alpha_bar_t = scheduler.alpha_bars[timesteps]
 
     x0_self = None
     use_self_conditioning = (
@@ -232,21 +270,21 @@ def compute_loss(
         and torch.rand((), device=device).item() < self_cond_p)
     if use_self_conditioning:
         with torch.no_grad():
-            first_noise = model(
+            first_output = model(
                 noisy, timesteps, images, poses,
                 x0_self=None, node_mask=mask)
-            alpha_bar = scheduler.alpha_bars[timesteps].view(-1, 1, 1)
-            x0_self = (
-                (noisy - torch.sqrt(1.0 - alpha_bar) * first_noise)
-                / torch.sqrt(alpha_bar)
-            )[..., :3].detach()
+            first_x0, _ = model_output_to_x0_epsilon(
+                noisy, first_output, alpha_bar_t, prediction_type)
+            x0_self = first_x0[..., :3].detach()
 
-    predicted_noise = model(
+    predicted_output = model(
         noisy, timesteps, images, poses,
         x0_self=x0_self, node_mask=mask)
+    target = training_target(
+        x0, true_noise, alpha_bar_t, prediction_type)
     # Keep reduction in FP32 when the forward runs under BF16.
     per_point = F.mse_loss(
-        predicted_noise.float(), true_noise.float(), reduction="none"
+        predicted_output.float(), target.float(), reduction="none"
     ).mean(dim=-1)
     numerator = (per_point * mask.float()).sum()
     denominator = mask.sum(dtype=torch.float32).clamp_min(1.0)
@@ -267,8 +305,8 @@ def compute_loss(
                 'coh_weight > 0 but this batch carries no edge_index. The '
                 'train loader is missing its EdgeCollate collate_fn, or the '
                 'edge cache does not cover these samples.')
-        alpha_bar_t = scheduler.alpha_bars[timesteps]
-        x0_hat = x0_from_eps(noisy, predicted_noise, alpha_bar_t)
+        x0_hat, _ = model_output_to_x0_epsilon(
+            noisy, predicted_output, alpha_bar_t, prediction_type)
         coherence_loss = edge_coherence_loss(
             x0_hat, x0,
             batch['edge_index'].to(device, non_blocking=True),
@@ -287,7 +325,10 @@ def compute_loss(
 
 
 @torch.no_grad()
-def evaluate(model, scheduler, val_loader, device, precision="fp32"):
+def evaluate(
+    model, scheduler, val_loader, device, precision="fp32",
+    prediction_type="epsilon",
+):
     """Point-weighted deterministic VAL loss over five fixed timesteps."""
     was_training = model.training
     model.eval()
@@ -306,7 +347,8 @@ def evaluate(model, scheduler, val_loader, device, precision="fp32"):
                     with _autocast_context(device, precision):
                         numerator, denominator = compute_loss(
                             model, scheduler, batch, device,
-                            fixed_t=timestep, return_parts=True)
+                            fixed_t=timestep, return_parts=True,
+                            prediction_type=prediction_type)
                     total_numerator += numerator.item()
                     total_denominator += denominator.item()
     finally:
@@ -323,6 +365,9 @@ def _validate_resume_signature(checkpoint, expected):
             "latest.pt is an older partial checkpoint and cannot provide an "
             "exact resume. Use it only as init_checkpoint (fine-tuning), or "
             "start the clean run in a new checkpoint directory.")
+    actual = dict(actual)
+    # Checkpoints created before prediction_type existed are epsilon models.
+    actual.setdefault("prediction_type", "epsilon")
     mismatches = {
         key: (actual.get(key), expected_value)
         for key, expected_value in expected.items()
@@ -352,6 +397,8 @@ def _checkpoint_payload(
         "early_stop_reference": float(early_stop_reference),
         "checks_since_improvement": int(checks_since_improvement),
         "hidden_dim": int(run_signature["hidden_dim"]),
+        "node_dim": int(run_signature["node_dim"]),
+        "prediction_type": run_signature["prediction_type"],
         "history": history,
         "rng_state": _rng_state(),
         "run_signature": run_signature,
@@ -397,6 +444,8 @@ def train(config, quick_test=False):
     allow_tf32 = bool(train_cfg.get("allow_tf32", True))
     cudnn_benchmark = bool(train_cfg.get("cudnn_benchmark", True))
     compile_model = bool(train_cfg.get("compile", False))
+    prediction_type = validate_prediction_type(
+        train_cfg.get("prediction_type", "epsilon"))
     resume_mode = str(train_cfg.get("resume_mode", "auto")).lower()
     init_checkpoint = train_cfg.get("init_checkpoint")
     checkpoint_dir = Path(train_cfg.get(
@@ -469,8 +518,7 @@ def train(config, quick_test=False):
         milestone_dir.mkdir(exist_ok=True)
 
     packaged_dir = data_cfg.get("packaged_dir", "data/processed/ds105_full")
-    train_ids = list_samples(packaged_dir, "train")
-    val_ids = list_samples(packaged_dir, "val")
+    train_ids, val_ids = _resolve_train_val_ids(packaged_dir, data_cfg)
     if quick_test:
         train_ids, val_ids = train_ids[:20], val_ids[:4]
 
@@ -500,7 +548,13 @@ def train(config, quick_test=False):
         generator=torch.Generator().manual_seed(seed + 1_000_000),
         **loader_kwargs)
 
-    raw_model = CenterlineDenoiser(hidden_dim=hidden_dim).to(device)
+    stored_node_dim = int(train_dataset[0]["centerline"].shape[-1])
+    node_dim = 4 if stored_node_dim == 5 else stored_node_dim
+    val_stored_node_dim = int(val_dataset[0]["centerline"].shape[-1])
+    if stored_node_dim not in (5, 8) or val_stored_node_dim != stored_node_dim:
+        raise RuntimeError("unsupported or inconsistent centerline representation")
+    raw_model = CenterlineDenoiser(
+        node_dim=node_dim, hidden_dim=hidden_dim).to(device)
     optimizer = torch.optim.Adam(
         raw_model.parameters(), lr=learning_rate, betas=(0.9, 0.99))
     noise_scheduler = NoiseScheduler(n_steps=1000, device=device)
@@ -510,6 +564,7 @@ def train(config, quick_test=False):
 
     run_signature = {
         "hidden_dim": hidden_dim,
+        "node_dim": node_dim,
         "batch_size": batch_size,
         "lr": learning_rate,
         "max_steps": max_steps,
@@ -524,6 +579,7 @@ def train(config, quick_test=False):
         "allow_tf32": allow_tf32,
         "cudnn_benchmark": cudnn_benchmark,
         "compile": compile_model,
+        "prediction_type": prediction_type,
         "dataset_fingerprint": _dataset_fingerprint(
             packaged_dir, train_ids, val_ids),
         "coh_weight": coh_weight,
@@ -536,8 +592,11 @@ def train(config, quick_test=False):
     best_val_loss = float("inf")
     early_stop_reference = float("inf")
     checks_since_improvement = 0
-    history = {"train_step": [], "train_loss": [], "val_step": [],
-               "val_loss": [], "lr": [], "eps_loss": [], "coh_loss": []}
+    history = {
+        "train_step": [], "train_loss": [], "val_step": [],
+        "val_loss": [], "lr": [], "prediction_loss": [],
+        "eps_loss": [], "v_loss": [], "coh_loss": [],
+    }
     elapsed_before = 0.0
     session_count = 1
 
@@ -566,6 +625,11 @@ def train(config, quick_test=False):
         checks_since_improvement = int(checkpoint.get(
             "checks_since_improvement", 0))
         history = checkpoint.get("history", history)
+        history.setdefault("prediction_loss", list(
+            history.get("eps_loss", [])))
+        history.setdefault("eps_loss", [])
+        history.setdefault("v_loss", [])
+        history.setdefault("coh_loss", [])
         elapsed_before = float(checkpoint.get("elapsed_seconds_total", 0.0))
         session_count = int(checkpoint.get("session_count", 1)) + 1
         _restore_rng_state(checkpoint.get("rng_state"))
@@ -577,6 +641,16 @@ def train(config, quick_test=False):
         if initial_hidden != hidden_dim:
             raise RuntimeError(
                 f"init checkpoint hidden_dim={initial_hidden}; config={hidden_dim}")
+        initial_prediction_type = initial.get(
+            "prediction_type",
+            initial.get("run_signature", {}).get(
+                "prediction_type", "epsilon"),
+        )
+        if initial_prediction_type != prediction_type:
+            raise RuntimeError(
+                "Cannot initialize a "
+                f"{prediction_type!r} run from a "
+                f"{initial_prediction_type!r} checkpoint")
         raw_model.load_state_dict(initial["model"], strict=True)
         print("Loaded weights only: this is fine-tuning, not exact resume")
     else:
@@ -609,6 +683,7 @@ def train(config, quick_test=False):
         f"Training on {device}: train={len(train_ids)}, val={len(val_ids)}, "
         f"hidden={hidden_dim}, batch={batch_size}, lr={learning_rate:g}, "
         f"steps={max_steps}, warmup={warmup_steps}, precision={precision}, "
+        f"prediction_type={prediction_type}, "
         f"max_hours_per_session={max_hours}")
 
     def elapsed_total():
@@ -631,11 +706,11 @@ def train(config, quick_test=False):
         model.train()
         optimizer.zero_grad(set_to_none=True)
         with _autocast_context(device, precision):
-            loss, eps_part, coh_part = compute_loss(
+            loss, prediction_part, coh_part = compute_loss(
                 model, noise_scheduler, batch, device,
                 cond_drop_prob=cond_drop_prob, self_cond_p=self_cond_p,
                 coh_weight=coh_weight, coh_kwargs=coh_kwargs,
-                return_coh=True)
+                return_coh=True, prediction_type=prediction_type)
         loss.backward()
         if grad_clip_norm > 0:
             torch.nn.utils.clip_grad_norm_(
@@ -654,7 +729,12 @@ def train(config, quick_test=False):
                     f"Non-finite training loss at step {step}")
             history["train_step"].append(step)
             history["train_loss"].append(loss_value)
-            history["eps_loss"].append(float(eps_part))
+            prediction_value = float(prediction_part)
+            history["prediction_loss"].append(prediction_value)
+            history["eps_loss"].append(
+                prediction_value if prediction_type == "epsilon" else None)
+            history["v_loss"].append(
+                prediction_value if prediction_type == "v" else None)
             history["coh_loss"].append(float(coh_part))
 
         # Check before starting a potentially long validation pass.
@@ -668,7 +748,8 @@ def train(config, quick_test=False):
         should_stop_early = False
         if step % val_every == 0 or step == max_steps:
             last_val_loss = float(evaluate(
-                model, noise_scheduler, val_loader, device, precision))
+                model, noise_scheduler, val_loader, device, precision,
+                prediction_type))
             history["val_step"].append(step)
             history["val_loss"].append(last_val_loss)
             history["lr"].append(float(optimizer.param_groups[0]["lr"]))
@@ -677,7 +758,7 @@ def train(config, quick_test=False):
                 else float(loss.detach()))
             parts = ""
             if coh_weight > 0.0:
-                parts = (f", eps={float(eps_part):.6f}"
+                parts = (f", prediction={float(prediction_part):.6f}"
                          f", coh={float(coh_part):.6f}"
                          f", w*coh={coh_weight * float(coh_part):.6f}")
             print(
@@ -716,6 +797,7 @@ def train(config, quick_test=False):
                 "step": int(step),
                 "val_loss": last_val_loss,
                 "hidden_dim": hidden_dim,
+                "node_dim": node_dim,
                 "run_signature": run_signature,
             }
             _atomic_torch_save(
@@ -736,8 +818,12 @@ def train(config, quick_test=False):
                   label="train loss", alpha=0.35)
         axis.plot(history["val_step"], history["val_loss"],
                   label="deterministic VAL loss", marker="o", markersize=3)
-        axis.set(xlabel="Optimizer step", ylabel="Noise-prediction MSE",
-                 title=f"Training curve (hidden_dim={hidden_dim})")
+        axis.set(
+            xlabel="Optimizer step",
+            ylabel=f"{prediction_type}-prediction MSE",
+            title=(f"Training curve (hidden_dim={hidden_dim}, "
+                   f"prediction_type={prediction_type})"),
+        )
         axis.set_yscale("log")
         axis.legend()
         figure.tight_layout()
