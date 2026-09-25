@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software or its derived evaluation protocol, please cite the
+  repository release. The associated manuscript citation will be added after
+  submission.
+title: >-
+  Counting Is Not Connecting: Topology-Aware Evaluation of Two-View Coronary
+  Centerline Diffusion
+type: software
+authors:
+  - family-names: Bahrami
+    given-names: Somayeh
+    affiliation: Georgia Institute of Technology
+  - family-names: Zhu
+    given-names: Bo
+    affiliation: Georgia Institute of Technology
+repository-code: https://github.com/Somayeh-Bahrami/coronary-centerline-diffusion
+url: https://github.com/Somayeh-Bahrami/coronary-centerline-diffusion
+license: MIT
+version: 0.1.0
+date-released: 2026-09-25
+keywords:
+  - coronary centerline
+  - biplane angiography
+  - diffusion model
+  - topology-aware evaluation
+  - medical image reconstruction
+

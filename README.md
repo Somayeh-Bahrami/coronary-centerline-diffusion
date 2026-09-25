@@ -150,14 +150,18 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
+For the frozen validation-study environment, use
+`requirements-repro.txt`. Select the CPU or CUDA PyTorch 2.11.0 wheel that
+matches the target system.
+
 Dataset rendering additionally requires a CUDA-compatible installation of
 [TIGRE](https://github.com/CERN/TIGRE). TIGRE is not installed by
 `requirements.txt`.
 
 ## Dataset construction
 
-The paper dataset uses a **105 mm** crop. Because the builder currently retains
-a 96 mm legacy default, always pass the crop explicitly:
+The paper dataset and current builder default use a **105 mm** crop. The crop
+is passed explicitly below so the command records the protocol clearly:
 
 ```bash
 python build_dataset_v3.py \
@@ -282,7 +286,7 @@ python cond_sensitivity.py \
 python -m pytest -q
 ```
 
-The current audited repository state contains 83 passing tests.
+The current audited repository state contains 81 passing tests.
 
 ## Reproducibility and release status
 
@@ -291,9 +295,17 @@ The current audited repository state contains 83 passing tests.
 - Checkpoints record the prediction parameterization and run signature.
 - Evaluation records dataset, edge-cache, checkpoint, sampler, and seed
   metadata.
+- SHA-256 hashes for frozen external artifacts are recorded in
+  [`manifests/final_artifacts.sha256`](manifests/final_artifacts.sha256).
 - The final manuscript, checkpoint release, and permanent artifact links will
   be added after the submission package is frozen.
 - The test split remains untouched at the current project stage.
+
+## License and citation
+
+The source code is released under the [MIT License](LICENSE). Citation
+metadata are provided in [CITATION.cff](CITATION.cff). The manuscript citation
+will be added after submission.
 
 ## Authors
 

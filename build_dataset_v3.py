@@ -14,7 +14,7 @@ Order of operations (each step feeds the next, one coordinate frame throughout):
 
     ImageCAS <id>.label.nii.gz
       -> RCA / LCA split (3D connected components, side from NIfTI affine)
-      -> 96 mm crop, bbox-centred, SHIFTED (not shrunk) at volume edges
+      -> 105 mm crop, bbox-centred, SHIFTED (not shrunk) at volume edges
       -> resample ONCE to isotropic (iso <= native min spacing: upsampling only)
       -> skeletonize  +  distance_transform_edt(sampling=iso)  -> radius in mm
       -> topology labels  +  DFS traversal ordering  (centerline.py)
@@ -202,7 +202,8 @@ Requires CUDA (TIGRE). Run from the repository root so `src.coronarycl`
 imports resolve.
 
 Usage:
-    python build_dataset_v3.py --raw_dir DIR --out_dir ./dataset_v3_1 --n 20
+    python build_dataset_v3.py --raw_dir DIR --out_dir ./ds105_full \
+        --n 1000 --crop_mm 105
 """
 import argparse, glob, json, os, sys, time
 from pathlib import Path
@@ -237,7 +238,7 @@ V1_PRIMARY, V1_SECONDARY = (18.0, 42.0), (-8.0, 8.0)             # L161-162
 V2_PRIMARY, V2_SECONDARY = (-8.0, 8.0), (18.0, 42.0)             # L193-194
 MOTION_ROT_DEG, MOTION_TRANS_MM = 10.0, 8.0                      # L191, L196
 DEEPCA_ACCURACY = 1.0                                            # L137 (we use 0.5, see P2-l)
-CROP_MM_DEFAULT = 96.0
+CROP_MM_DEFAULT = 105.0
 ISO_MM_CAP = 0.35            # never coarser than this; --iso auto goes finer as needed
 MIN_COMPONENT_FRAC = 0.05
 _CONN26 = np.ones((3, 3, 3), int)
@@ -569,8 +570,8 @@ def main():
                          "DOWNsample -- not recommended" % ISO_MM_CAP)
     ap.add_argument("--max_iso_voxels", type=float, default=80e6,
                     help="P1-h: reject a sample whose isotropic grid exceeds this many "
-                         "voxels, rather than silently coarsening it (~0.22 mm over a "
-                         "96 mm cube). Raise it if you have the GPU memory.")
+                         "voxels, rather than silently coarsening it. Raise it if you "
+                         "have the GPU memory.")
     ap.add_argument("--max_points", type=int, default=4000)
     ap.add_argument("--tol_px", type=float, default=2.0)
     ap.add_argument("--tigre_accuracy", type=float, default=0.5,
@@ -592,8 +593,9 @@ def main():
     ap.add_argument("--min_on_detector", type=float, default=0.95,
                     help="P2-f: minimum PER-VIEW fraction of centerline points inside "
                          "the 512^2 detector. Was 0.99, which was arbitrary: DeepCA's "
-                         "FOV at isocentre is 99-115 mm while a 96 mm crop spans "
-                         "121-136 mm once rotated, so partial per-view loss is expected.")
+                         "FOV at isocentre is 99-115 mm while a 105 mm crop spans "
+                         "roughly 132-149 mm once rotated, so partial per-view loss "
+                         "is expected.")
     ap.add_argument("--min_coverage", type=float, default=1.0,
                     help="P1-o: minimum fraction of GT points on-detector in AT LEAST "
                          "ONE view. A point invisible in both is unlearnable, so this "
@@ -602,7 +604,7 @@ def main():
                     help="P2-m: reject when the silhouette touches a detector border. "
                          "OFF by default -- clinical angiography clips vessels at the "
                          "frame edge routinely and DeepCA's geometry makes it "
-                         "unavoidable for a 96 mm crop, so it is a diagnostic.")
+                         "unavoidable for the final 105 mm crop, so it is a diagnostic.")
     ap.add_argument("--max_dlt_rms", type=float, default=1.0,
                     help="P2-e/P1-i: max HELD-OUT DLT rms in px; NaN always rejects")
     ap.add_argument("--require_single_skeleton", dest="require_single_skeleton",

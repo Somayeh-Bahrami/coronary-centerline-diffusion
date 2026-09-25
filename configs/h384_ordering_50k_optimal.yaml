@@ -36,7 +36,7 @@ train:
   edge_cache: null
   resume_mode: auto
   init_checkpoint: null
-  checkpoint_dir: outputs/ordering_50k/optimal
+  checkpoint_dir: outputs/paper_50k/optimal
   quick_steps: 20
   quick_val_every: 10
 
@@ -47,4 +47,4 @@ eval:
   guidance: 2.0
   sampling_seeds: [104729, 130363, 155921, 181081, 205019]
   precision: fp32
-  topology_edge_cache: ordering_edge_cache_v1
+  topology_edge_cache: artifacts/optimal_edge_cache

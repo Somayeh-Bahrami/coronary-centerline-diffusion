@@ -17,8 +17,8 @@ def test_paired_configs_have_only_preregistered_path_differences():
     dfs, optimal = load(DFS_PATH), load(OPTIMAL_PATH)
     assert dfs["data"]["packaged_dir"].endswith("ds105_full")
     assert optimal["data"]["packaged_dir"].endswith("ds105_optimal_v1")
-    assert dfs["eval"]["topology_edge_cache"].endswith("edge_cache")
-    assert optimal["eval"]["topology_edge_cache"].endswith("ordering_edge_cache_v1")
+    assert dfs["eval"]["topology_edge_cache"].endswith("dfs_edge_cache")
+    assert optimal["eval"]["topology_edge_cache"].endswith("optimal_edge_cache")
     assert dfs["train"]["checkpoint_dir"] != optimal["train"]["checkpoint_dir"]
 
     left, right = deepcopy(dfs), deepcopy(optimal)

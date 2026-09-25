@@ -1,0 +1,14 @@
+# Frozen Python environment for the final validation-study code.
+# Production training used PyTorch 2.11.0 with CUDA 13.0 on Blackwell.
+# Install the appropriate CPU/CUDA torch wheel for the target platform.
+numpy==2.5.2
+scipy==1.16.3
+nibabel==5.4.2
+scikit-image==0.26.0
+torch==2.11.0
+tqdm==4.67.3
+matplotlib==3.10.7
+pandas==2.3.3
+PyYAML==6.0.3
+pytest==9.0.2
+

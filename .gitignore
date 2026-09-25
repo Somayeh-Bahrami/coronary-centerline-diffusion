@@ -8,13 +8,22 @@ data/processed/*
 # outputs / results
 outputs/
 checkpoints/
+artifacts/
 *.pt
 *.pth
 *.obj
 *.pdf
 
+# generated graph caches and analysis outputs
+edge_cache/
+*_edge_cache_v1*/
+ordering_analysis_*/
+ordering_stage*/
+leaf_bound_check_results.json
+
 # python
 __pycache__/
+.pytest_cache/
 *.pyc
 .venv/
 *.egg-info/
