@@ -1,0 +1,1205 @@
+{
+  "schema_version": "ordering_mechanism_stage1_5_v1",
+  "protocol": {
+    "split": "val",
+    "n_samples": 177,
+    "n_patients": 96,
+    "seeds": [
+      104729,
+      130363,
+      155921,
+      181081,
+      205019
+    ],
+    "broken_edge_threshold": "predicted edge length > 5 * GT edge length",
+    "checkpoint": {
+      "path": "/marimo/h384_200k_clean_s20260911/checkpoints/prod/milestones/step_150000.pt",
+      "sha256": "d16ba2d76b026864ab2134fbdfae1f1e3c8588b28e3da355769c3623e80aede1",
+      "hidden_dim": 384,
+      "step": 150000,
+      "val_loss": 0.12112825328034685
+    },
+    "evaluation": {
+      "split": "val",
+      "ddim_steps": 100,
+      "guidance": 2.0,
+      "seeds": [
+        104729,
+        130363,
+        155921,
+        181081,
+        205019
+      ],
+      "bounds": "physical",
+      "radius_bounds_mm_from_train": [
+        0.2890625,
+        4.229065895080566
+      ],
+      "precision": "fp32",
+      "n_points_source": "ground truth",
+      "topology_metrics": "given/oracle GT topology",
+      "chamfer_convention": "mean(pred->gt)+mean(gt->pred), Euclidean, unsquared",
+      "aggregation": "seeds averaged per vessel sample; sample means stratified by vessel; headline CI gives equal patient weight"
+    },
+    "bootstrap_repetitions": 10000,
+    "bootstrap_seed": 20260915
+  },
+  "provenance": {
+    "dataset": "/Users/atefebahrami/Desktop/GT_Courses/2nd_Semster/CS6999/GitHub/cs6999-coronary-centerline-2/data/processed/ds105_full",
+    "edge_cache_sha256": "d2a2d1eec9c89fe572337300bcc333a7dc52c1e84aa68984c8d9f03ebee49b56",
+    "permutation_bank_sha256": "ae75146825b4e93d091fcd300c898a7d3eeae6c49c092c86ca4d34d0a22c59a0",
+    "evaluation_package_sha256": "4e362edd3fbbc44fea01664e3fb5f00018c7744e450f8493db505ef91f30cdc3",
+    "permutation_metadata": {
+      "current_nonconsecutive_fraction": {
+        "maximum": 0.2727272727272727,
+        "mean": 0.03675200391209678,
+        "median": 0.02655860076178801,
+        "minimum": 0.0,
+        "p25": 0.017191700268817223,
+        "p75": 0.04448455903256657,
+        "p90": 0.07634992541848513,
+        "p95": 0.09534814358800174
+      },
+      "edge_cache": "/Users/atefebahrami/Desktop/GT_Courses/2nd_Semster/CS6999/GitHub/cs6999-coronary-centerline-2/edge_cache/edges_v1.npz",
+      "edge_cache_sha256": "d2a2d1eec9c89fe572337300bcc333a7dc52c1e84aa68984c8d9f03ebee49b56",
+      "n_samples": 1694,
+      "objective": "maximize the number of evaluator-tree edges whose endpoints are adjacent in one node permutation",
+      "optimal_nonconsecutive_fraction": {
+        "maximum": 0.093964858670741,
+        "mean": 0.022712845575441603,
+        "median": 0.02051632817706689,
+        "minimum": 0.0,
+        "p25": 0.014288718010332768,
+        "p75": 0.02894935383374636,
+        "p90": 0.03777449370552819,
+        "p95": 0.04464652929326841
+      },
+      "permutation_semantics": "new valid row position -> old packaged valid row index",
+      "recoverable_gap": {
+        "maximum": 0.1787624140565317,
+        "mean": 0.01403915833665518,
+        "median": 0.0057736797541186324,
+        "minimum": 0.0,
+        "p25": 0.0022421524663677195,
+        "p75": 0.01567253658466114,
+        "p90": 0.040533550792171504,
+        "p95": 0.05455133062434424
+      },
+      "schema_version": "optimal_ordering_v1",
+      "source_commit": "008fe9d8e2c228171bfb06e0709387791136a148",
+      "source_dataset": "/Users/atefebahrami/Desktop/GT_Courses/2nd_Semster/CS6999/GitHub/cs6999-coronary-centerline-2/data/processed/ds105_full",
+      "split_counts": {
+        "test": 167,
+        "train": 1350,
+        "val": 177
+      },
+      "within_half_percentage_point_of_floor": {
+        "count": 782,
+        "fraction": 0.46162927981109797
+      }
+    },
+    "canonical_topology_policy": "All Stage 1.5 metrics use the edge cache built directly from packaged float32 GT. Legacy edges reconstructed after GT normalization/de-normalization are diagnostic only.",
+    "legacy_saved_edge_mismatch": {
+      "affected_samples": 119,
+      "fraction_of_validation_samples": 0.672316384180791,
+      "details": [
+        {
+          "sample": "101_LCA",
+          "stored_edge_count": 1179,
+          "canonical_edge_count": 1179,
+          "shared_edge_count": 1154,
+          "stored_only_count": 25,
+          "canonical_only_count": 25
+        },
+        {
+          "sample": "101_RCA",
+          "stored_edge_count": 609,
+          "canonical_edge_count": 609,
+          "shared_edge_count": 607,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "107_LCA",
+          "stored_edge_count": 987,
+          "canonical_edge_count": 987,
+          "shared_edge_count": 972,
+          "stored_only_count": 15,
+          "canonical_only_count": 15
+        },
+        {
+          "sample": "118_LCA",
+          "stored_edge_count": 1103,
+          "canonical_edge_count": 1103,
+          "shared_edge_count": 1101,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "118_RCA",
+          "stored_edge_count": 794,
+          "canonical_edge_count": 794,
+          "shared_edge_count": 793,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "127_RCA",
+          "stored_edge_count": 593,
+          "canonical_edge_count": 593,
+          "shared_edge_count": 591,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "13_RCA",
+          "stored_edge_count": 1165,
+          "canonical_edge_count": 1165,
+          "shared_edge_count": 1160,
+          "stored_only_count": 5,
+          "canonical_only_count": 5
+        },
+        {
+          "sample": "159_LCA",
+          "stored_edge_count": 824,
+          "canonical_edge_count": 824,
+          "shared_edge_count": 823,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "163_RCA",
+          "stored_edge_count": 1000,
+          "canonical_edge_count": 1000,
+          "shared_edge_count": 997,
+          "stored_only_count": 3,
+          "canonical_only_count": 3
+        },
+        {
+          "sample": "165_LCA",
+          "stored_edge_count": 1106,
+          "canonical_edge_count": 1106,
+          "shared_edge_count": 1105,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "190_LCA",
+          "stored_edge_count": 1577,
+          "canonical_edge_count": 1577,
+          "shared_edge_count": 1573,
+          "stored_only_count": 4,
+          "canonical_only_count": 4
+        },
+        {
+          "sample": "190_RCA",
+          "stored_edge_count": 762,
+          "canonical_edge_count": 762,
+          "shared_edge_count": 757,
+          "stored_only_count": 5,
+          "canonical_only_count": 5
+        },
+        {
+          "sample": "202_LCA",
+          "stored_edge_count": 1009,
+          "canonical_edge_count": 1009,
+          "shared_edge_count": 1007,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "202_RCA",
+          "stored_edge_count": 557,
+          "canonical_edge_count": 557,
+          "shared_edge_count": 556,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "207_LCA",
+          "stored_edge_count": 1243,
+          "canonical_edge_count": 1243,
+          "shared_edge_count": 1235,
+          "stored_only_count": 8,
+          "canonical_only_count": 8
+        },
+        {
+          "sample": "209_LCA",
+          "stored_edge_count": 747,
+          "canonical_edge_count": 747,
+          "shared_edge_count": 743,
+          "stored_only_count": 4,
+          "canonical_only_count": 4
+        },
+        {
+          "sample": "209_RCA",
+          "stored_edge_count": 806,
+          "canonical_edge_count": 806,
+          "shared_edge_count": 805,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "210_LCA",
+          "stored_edge_count": 1055,
+          "canonical_edge_count": 1055,
+          "shared_edge_count": 1054,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "210_RCA",
+          "stored_edge_count": 871,
+          "canonical_edge_count": 871,
+          "shared_edge_count": 870,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "213_LCA",
+          "stored_edge_count": 795,
+          "canonical_edge_count": 795,
+          "shared_edge_count": 790,
+          "stored_only_count": 5,
+          "canonical_only_count": 5
+        },
+        {
+          "sample": "213_RCA",
+          "stored_edge_count": 1029,
+          "canonical_edge_count": 1029,
+          "shared_edge_count": 1028,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "221_LCA",
+          "stored_edge_count": 1134,
+          "canonical_edge_count": 1134,
+          "shared_edge_count": 1128,
+          "stored_only_count": 6,
+          "canonical_only_count": 6
+        },
+        {
+          "sample": "223_LCA",
+          "stored_edge_count": 1077,
+          "canonical_edge_count": 1077,
+          "shared_edge_count": 1074,
+          "stored_only_count": 3,
+          "canonical_only_count": 3
+        },
+        {
+          "sample": "246_LCA",
+          "stored_edge_count": 627,
+          "canonical_edge_count": 627,
+          "shared_edge_count": 622,
+          "stored_only_count": 5,
+          "canonical_only_count": 5
+        },
+        {
+          "sample": "246_RCA",
+          "stored_edge_count": 722,
+          "canonical_edge_count": 722,
+          "shared_edge_count": 715,
+          "stored_only_count": 7,
+          "canonical_only_count": 7
+        },
+        {
+          "sample": "265_LCA",
+          "stored_edge_count": 865,
+          "canonical_edge_count": 865,
+          "shared_edge_count": 858,
+          "stored_only_count": 7,
+          "canonical_only_count": 7
+        },
+        {
+          "sample": "270_LCA",
+          "stored_edge_count": 741,
+          "canonical_edge_count": 741,
+          "shared_edge_count": 740,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "270_RCA",
+          "stored_edge_count": 796,
+          "canonical_edge_count": 796,
+          "shared_edge_count": 795,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "271_LCA",
+          "stored_edge_count": 1003,
+          "canonical_edge_count": 1003,
+          "shared_edge_count": 992,
+          "stored_only_count": 11,
+          "canonical_only_count": 11
+        },
+        {
+          "sample": "271_RCA",
+          "stored_edge_count": 699,
+          "canonical_edge_count": 699,
+          "shared_edge_count": 698,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "274_LCA",
+          "stored_edge_count": 1083,
+          "canonical_edge_count": 1083,
+          "shared_edge_count": 1080,
+          "stored_only_count": 3,
+          "canonical_only_count": 3
+        },
+        {
+          "sample": "274_RCA",
+          "stored_edge_count": 634,
+          "canonical_edge_count": 634,
+          "shared_edge_count": 632,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "275_RCA",
+          "stored_edge_count": 837,
+          "canonical_edge_count": 837,
+          "shared_edge_count": 835,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "298_RCA",
+          "stored_edge_count": 696,
+          "canonical_edge_count": 696,
+          "shared_edge_count": 695,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "330_LCA",
+          "stored_edge_count": 1201,
+          "canonical_edge_count": 1201,
+          "shared_edge_count": 1192,
+          "stored_only_count": 9,
+          "canonical_only_count": 9
+        },
+        {
+          "sample": "330_RCA",
+          "stored_edge_count": 1060,
+          "canonical_edge_count": 1060,
+          "shared_edge_count": 1050,
+          "stored_only_count": 10,
+          "canonical_only_count": 10
+        },
+        {
+          "sample": "335_RCA",
+          "stored_edge_count": 793,
+          "canonical_edge_count": 793,
+          "shared_edge_count": 792,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "351_LCA",
+          "stored_edge_count": 1142,
+          "canonical_edge_count": 1142,
+          "shared_edge_count": 1139,
+          "stored_only_count": 3,
+          "canonical_only_count": 3
+        },
+        {
+          "sample": "351_RCA",
+          "stored_edge_count": 1067,
+          "canonical_edge_count": 1067,
+          "shared_edge_count": 1056,
+          "stored_only_count": 11,
+          "canonical_only_count": 11
+        },
+        {
+          "sample": "381_LCA",
+          "stored_edge_count": 1303,
+          "canonical_edge_count": 1303,
+          "shared_edge_count": 1299,
+          "stored_only_count": 4,
+          "canonical_only_count": 4
+        },
+        {
+          "sample": "381_RCA",
+          "stored_edge_count": 771,
+          "canonical_edge_count": 771,
+          "shared_edge_count": 767,
+          "stored_only_count": 4,
+          "canonical_only_count": 4
+        },
+        {
+          "sample": "389_LCA",
+          "stored_edge_count": 1795,
+          "canonical_edge_count": 1795,
+          "shared_edge_count": 1780,
+          "stored_only_count": 15,
+          "canonical_only_count": 15
+        },
+        {
+          "sample": "389_RCA",
+          "stored_edge_count": 932,
+          "canonical_edge_count": 932,
+          "shared_edge_count": 931,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "392_RCA",
+          "stored_edge_count": 923,
+          "canonical_edge_count": 923,
+          "shared_edge_count": 920,
+          "stored_only_count": 3,
+          "canonical_only_count": 3
+        },
+        {
+          "sample": "3_RCA",
+          "stored_edge_count": 777,
+          "canonical_edge_count": 777,
+          "shared_edge_count": 772,
+          "stored_only_count": 5,
+          "canonical_only_count": 5
+        },
+        {
+          "sample": "407_LCA",
+          "stored_edge_count": 1183,
+          "canonical_edge_count": 1183,
+          "shared_edge_count": 1175,
+          "stored_only_count": 8,
+          "canonical_only_count": 8
+        },
+        {
+          "sample": "421_LCA",
+          "stored_edge_count": 682,
+          "canonical_edge_count": 682,
+          "shared_edge_count": 681,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "421_RCA",
+          "stored_edge_count": 896,
+          "canonical_edge_count": 896,
+          "shared_edge_count": 891,
+          "stored_only_count": 5,
+          "canonical_only_count": 5
+        },
+        {
+          "sample": "422_LCA",
+          "stored_edge_count": 1086,
+          "canonical_edge_count": 1086,
+          "shared_edge_count": 1082,
+          "stored_only_count": 4,
+          "canonical_only_count": 4
+        },
+        {
+          "sample": "422_RCA",
+          "stored_edge_count": 567,
+          "canonical_edge_count": 567,
+          "shared_edge_count": 562,
+          "stored_only_count": 5,
+          "canonical_only_count": 5
+        },
+        {
+          "sample": "446_LCA",
+          "stored_edge_count": 1093,
+          "canonical_edge_count": 1093,
+          "shared_edge_count": 1091,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "446_RCA",
+          "stored_edge_count": 1322,
+          "canonical_edge_count": 1322,
+          "shared_edge_count": 1316,
+          "stored_only_count": 6,
+          "canonical_only_count": 6
+        },
+        {
+          "sample": "452_LCA",
+          "stored_edge_count": 703,
+          "canonical_edge_count": 703,
+          "shared_edge_count": 698,
+          "stored_only_count": 5,
+          "canonical_only_count": 5
+        },
+        {
+          "sample": "460_LCA",
+          "stored_edge_count": 688,
+          "canonical_edge_count": 688,
+          "shared_edge_count": 686,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "460_RCA",
+          "stored_edge_count": 1105,
+          "canonical_edge_count": 1105,
+          "shared_edge_count": 1096,
+          "stored_only_count": 9,
+          "canonical_only_count": 9
+        },
+        {
+          "sample": "468_RCA",
+          "stored_edge_count": 1310,
+          "canonical_edge_count": 1310,
+          "shared_edge_count": 1309,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "47_LCA",
+          "stored_edge_count": 1210,
+          "canonical_edge_count": 1210,
+          "shared_edge_count": 1194,
+          "stored_only_count": 16,
+          "canonical_only_count": 16
+        },
+        {
+          "sample": "47_RCA",
+          "stored_edge_count": 805,
+          "canonical_edge_count": 805,
+          "shared_edge_count": 799,
+          "stored_only_count": 6,
+          "canonical_only_count": 6
+        },
+        {
+          "sample": "487_RCA",
+          "stored_edge_count": 884,
+          "canonical_edge_count": 884,
+          "shared_edge_count": 880,
+          "stored_only_count": 4,
+          "canonical_only_count": 4
+        },
+        {
+          "sample": "499_LCA",
+          "stored_edge_count": 855,
+          "canonical_edge_count": 855,
+          "shared_edge_count": 854,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "499_RCA",
+          "stored_edge_count": 801,
+          "canonical_edge_count": 801,
+          "shared_edge_count": 797,
+          "stored_only_count": 4,
+          "canonical_only_count": 4
+        },
+        {
+          "sample": "510_RCA",
+          "stored_edge_count": 634,
+          "canonical_edge_count": 634,
+          "shared_edge_count": 629,
+          "stored_only_count": 5,
+          "canonical_only_count": 5
+        },
+        {
+          "sample": "512_LCA",
+          "stored_edge_count": 958,
+          "canonical_edge_count": 958,
+          "shared_edge_count": 952,
+          "stored_only_count": 6,
+          "canonical_only_count": 6
+        },
+        {
+          "sample": "512_RCA",
+          "stored_edge_count": 673,
+          "canonical_edge_count": 673,
+          "shared_edge_count": 671,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "519_LCA",
+          "stored_edge_count": 840,
+          "canonical_edge_count": 840,
+          "shared_edge_count": 839,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "519_RCA",
+          "stored_edge_count": 390,
+          "canonical_edge_count": 390,
+          "shared_edge_count": 389,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "520_LCA",
+          "stored_edge_count": 1223,
+          "canonical_edge_count": 1223,
+          "shared_edge_count": 1219,
+          "stored_only_count": 4,
+          "canonical_only_count": 4
+        },
+        {
+          "sample": "523_RCA",
+          "stored_edge_count": 877,
+          "canonical_edge_count": 877,
+          "shared_edge_count": 876,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "535_LCA",
+          "stored_edge_count": 1024,
+          "canonical_edge_count": 1024,
+          "shared_edge_count": 1004,
+          "stored_only_count": 20,
+          "canonical_only_count": 20
+        },
+        {
+          "sample": "535_RCA",
+          "stored_edge_count": 1089,
+          "canonical_edge_count": 1089,
+          "shared_edge_count": 1085,
+          "stored_only_count": 4,
+          "canonical_only_count": 4
+        },
+        {
+          "sample": "578_LCA",
+          "stored_edge_count": 697,
+          "canonical_edge_count": 697,
+          "shared_edge_count": 695,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "584_LCA",
+          "stored_edge_count": 1091,
+          "canonical_edge_count": 1091,
+          "shared_edge_count": 1085,
+          "stored_only_count": 6,
+          "canonical_only_count": 6
+        },
+        {
+          "sample": "584_RCA",
+          "stored_edge_count": 682,
+          "canonical_edge_count": 682,
+          "shared_edge_count": 668,
+          "stored_only_count": 14,
+          "canonical_only_count": 14
+        },
+        {
+          "sample": "585_LCA",
+          "stored_edge_count": 853,
+          "canonical_edge_count": 853,
+          "shared_edge_count": 852,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "585_RCA",
+          "stored_edge_count": 826,
+          "canonical_edge_count": 826,
+          "shared_edge_count": 824,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "595_LCA",
+          "stored_edge_count": 623,
+          "canonical_edge_count": 623,
+          "shared_edge_count": 620,
+          "stored_only_count": 3,
+          "canonical_only_count": 3
+        },
+        {
+          "sample": "626_LCA",
+          "stored_edge_count": 1750,
+          "canonical_edge_count": 1750,
+          "shared_edge_count": 1722,
+          "stored_only_count": 28,
+          "canonical_only_count": 28
+        },
+        {
+          "sample": "626_RCA",
+          "stored_edge_count": 670,
+          "canonical_edge_count": 670,
+          "shared_edge_count": 665,
+          "stored_only_count": 5,
+          "canonical_only_count": 5
+        },
+        {
+          "sample": "632_LCA",
+          "stored_edge_count": 1018,
+          "canonical_edge_count": 1018,
+          "shared_edge_count": 1016,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "632_RCA",
+          "stored_edge_count": 717,
+          "canonical_edge_count": 717,
+          "shared_edge_count": 716,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "642_LCA",
+          "stored_edge_count": 1400,
+          "canonical_edge_count": 1400,
+          "shared_edge_count": 1399,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "652_RCA",
+          "stored_edge_count": 929,
+          "canonical_edge_count": 929,
+          "shared_edge_count": 927,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "653_RCA",
+          "stored_edge_count": 686,
+          "canonical_edge_count": 686,
+          "shared_edge_count": 684,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "675_RCA",
+          "stored_edge_count": 697,
+          "canonical_edge_count": 697,
+          "shared_edge_count": 695,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "684_RCA",
+          "stored_edge_count": 808,
+          "canonical_edge_count": 808,
+          "shared_edge_count": 806,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "695_LCA",
+          "stored_edge_count": 779,
+          "canonical_edge_count": 779,
+          "shared_edge_count": 775,
+          "stored_only_count": 4,
+          "canonical_only_count": 4
+        },
+        {
+          "sample": "708_LCA",
+          "stored_edge_count": 1265,
+          "canonical_edge_count": 1265,
+          "shared_edge_count": 1261,
+          "stored_only_count": 4,
+          "canonical_only_count": 4
+        },
+        {
+          "sample": "708_RCA",
+          "stored_edge_count": 804,
+          "canonical_edge_count": 804,
+          "shared_edge_count": 803,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "70_RCA",
+          "stored_edge_count": 842,
+          "canonical_edge_count": 842,
+          "shared_edge_count": 840,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "712_LCA",
+          "stored_edge_count": 784,
+          "canonical_edge_count": 784,
+          "shared_edge_count": 772,
+          "stored_only_count": 12,
+          "canonical_only_count": 12
+        },
+        {
+          "sample": "712_RCA",
+          "stored_edge_count": 1192,
+          "canonical_edge_count": 1192,
+          "shared_edge_count": 1170,
+          "stored_only_count": 22,
+          "canonical_only_count": 22
+        },
+        {
+          "sample": "735_RCA",
+          "stored_edge_count": 1202,
+          "canonical_edge_count": 1202,
+          "shared_edge_count": 1192,
+          "stored_only_count": 10,
+          "canonical_only_count": 10
+        },
+        {
+          "sample": "763_LCA",
+          "stored_edge_count": 639,
+          "canonical_edge_count": 639,
+          "shared_edge_count": 636,
+          "stored_only_count": 3,
+          "canonical_only_count": 3
+        },
+        {
+          "sample": "763_RCA",
+          "stored_edge_count": 795,
+          "canonical_edge_count": 795,
+          "shared_edge_count": 793,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "769_LCA",
+          "stored_edge_count": 1483,
+          "canonical_edge_count": 1483,
+          "shared_edge_count": 1473,
+          "stored_only_count": 10,
+          "canonical_only_count": 10
+        },
+        {
+          "sample": "769_RCA",
+          "stored_edge_count": 886,
+          "canonical_edge_count": 886,
+          "shared_edge_count": 877,
+          "stored_only_count": 9,
+          "canonical_only_count": 9
+        },
+        {
+          "sample": "815_LCA",
+          "stored_edge_count": 924,
+          "canonical_edge_count": 924,
+          "shared_edge_count": 923,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "815_RCA",
+          "stored_edge_count": 717,
+          "canonical_edge_count": 717,
+          "shared_edge_count": 714,
+          "stored_only_count": 3,
+          "canonical_only_count": 3
+        },
+        {
+          "sample": "82_LCA",
+          "stored_edge_count": 522,
+          "canonical_edge_count": 522,
+          "shared_edge_count": 521,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "844_RCA",
+          "stored_edge_count": 484,
+          "canonical_edge_count": 484,
+          "shared_edge_count": 483,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "854_LCA",
+          "stored_edge_count": 1274,
+          "canonical_edge_count": 1274,
+          "shared_edge_count": 1264,
+          "stored_only_count": 10,
+          "canonical_only_count": 10
+        },
+        {
+          "sample": "854_RCA",
+          "stored_edge_count": 450,
+          "canonical_edge_count": 450,
+          "shared_edge_count": 445,
+          "stored_only_count": 5,
+          "canonical_only_count": 5
+        },
+        {
+          "sample": "85_LCA",
+          "stored_edge_count": 879,
+          "canonical_edge_count": 879,
+          "shared_edge_count": 873,
+          "stored_only_count": 6,
+          "canonical_only_count": 6
+        },
+        {
+          "sample": "85_RCA",
+          "stored_edge_count": 843,
+          "canonical_edge_count": 843,
+          "shared_edge_count": 840,
+          "stored_only_count": 3,
+          "canonical_only_count": 3
+        },
+        {
+          "sample": "891_LCA",
+          "stored_edge_count": 854,
+          "canonical_edge_count": 854,
+          "shared_edge_count": 848,
+          "stored_only_count": 6,
+          "canonical_only_count": 6
+        },
+        {
+          "sample": "891_RCA",
+          "stored_edge_count": 444,
+          "canonical_edge_count": 444,
+          "shared_edge_count": 442,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "927_LCA",
+          "stored_edge_count": 1138,
+          "canonical_edge_count": 1138,
+          "shared_edge_count": 1135,
+          "stored_only_count": 3,
+          "canonical_only_count": 3
+        },
+        {
+          "sample": "946_LCA",
+          "stored_edge_count": 753,
+          "canonical_edge_count": 753,
+          "shared_edge_count": 751,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "946_RCA",
+          "stored_edge_count": 499,
+          "canonical_edge_count": 499,
+          "shared_edge_count": 488,
+          "stored_only_count": 11,
+          "canonical_only_count": 11
+        },
+        {
+          "sample": "948_LCA",
+          "stored_edge_count": 956,
+          "canonical_edge_count": 956,
+          "shared_edge_count": 955,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "948_RCA",
+          "stored_edge_count": 1060,
+          "canonical_edge_count": 1060,
+          "shared_edge_count": 1058,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "955_RCA",
+          "stored_edge_count": 1023,
+          "canonical_edge_count": 1023,
+          "shared_edge_count": 1017,
+          "stored_only_count": 6,
+          "canonical_only_count": 6
+        },
+        {
+          "sample": "971_LCA",
+          "stored_edge_count": 937,
+          "canonical_edge_count": 937,
+          "shared_edge_count": 935,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "974_LCA",
+          "stored_edge_count": 1525,
+          "canonical_edge_count": 1525,
+          "shared_edge_count": 1515,
+          "stored_only_count": 10,
+          "canonical_only_count": 10
+        },
+        {
+          "sample": "974_RCA",
+          "stored_edge_count": 882,
+          "canonical_edge_count": 882,
+          "shared_edge_count": 880,
+          "stored_only_count": 2,
+          "canonical_only_count": 2
+        },
+        {
+          "sample": "979_LCA",
+          "stored_edge_count": 1275,
+          "canonical_edge_count": 1275,
+          "shared_edge_count": 1267,
+          "stored_only_count": 8,
+          "canonical_only_count": 8
+        },
+        {
+          "sample": "979_RCA",
+          "stored_edge_count": 446,
+          "canonical_edge_count": 446,
+          "shared_edge_count": 445,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "9_LCA",
+          "stored_edge_count": 983,
+          "canonical_edge_count": 983,
+          "shared_edge_count": 982,
+          "stored_only_count": 1,
+          "canonical_only_count": 1
+        },
+        {
+          "sample": "9_RCA",
+          "stored_edge_count": 1008,
+          "canonical_edge_count": 1008,
+          "shared_edge_count": 999,
+          "stored_only_count": 9,
+          "canonical_only_count": 9
+        }
+      ]
+    }
+  },
+  "groups": {
+    "always_consecutive": {
+      "structural_edge_count": 137795,
+      "structural_edge_fraction": 0.9390674408461455,
+      "edge_observations_across_seeds": 688975,
+      "pooled_pred_gt_length_ratio": 1.4940096927799553,
+      "pooled_broken_edge_fraction_5x": 0.01411226822453645,
+      "signed_excess_mm_per_edge_observation": 0.2252288583094611,
+      "positive_excess_mm_per_edge_observation": 0.3039914842511692,
+      "fraction_of_total_signed_excess": 0.1675427153106307,
+      "fraction_of_total_positive_excess": 0.21328988591124967,
+      "equal_patient_length_ratio": {
+        "n_patients": 96,
+        "mean": 1.504626314738988,
+        "ci95": [
+          1.4732064896166266,
+          1.5421510244836794
+        ]
+      },
+      "equal_patient_broken_fraction": {
+        "n_patients": 96,
+        "mean": 0.015127187446280338,
+        "ci95": [
+          0.01316951519581026,
+          0.018288372868467233
+        ]
+      }
+    },
+    "rescued": {
+      "structural_edge_count": 5280,
+      "structural_edge_fraction": 0.035982989859339225,
+      "edge_observations_across_seeds": 26400,
+      "pooled_pred_gt_length_ratio": 60.19792864567904,
+      "pooled_broken_edge_fraction_5x": 0.8284848484848485,
+      "signed_excess_mm_per_edge_observation": 25.23696282707101,
+      "positive_excess_mm_per_edge_observation": 25.23745827118176,
+      "fraction_of_total_signed_excess": 0.7193480417148201,
+      "fraction_of_total_positive_excess": 0.6785079199310293,
+      "equal_patient_length_ratio": {
+        "n_patients": 96,
+        "mean": 56.73445938188892,
+        "ci95": [
+          53.77853910967398,
+          59.86848329657735
+        ]
+      },
+      "equal_patient_broken_fraction": {
+        "n_patients": 96,
+        "mean": 0.8279632700811632,
+        "ci95": [
+          0.8130448439609611,
+          0.842524536081961
+        ]
+      }
+    },
+    "sacrificed": {
+      "structural_edge_count": 2871,
+      "structural_edge_fraction": 0.019565750736015703,
+      "edge_observations_across_seeds": 14355,
+      "pooled_pred_gt_length_ratio": 1.3541443398527955,
+      "pooled_broken_edge_fraction_5x": 0.0124695228143504,
+      "signed_excess_mm_per_edge_observation": 0.17450881222264558,
+      "positive_excess_mm_per_edge_observation": 0.27819474028246194,
+      "fraction_of_total_signed_excess": 0.0027046969429133584,
+      "fraction_of_total_positive_excess": 0.004066843798878615,
+      "equal_patient_length_ratio": {
+        "n_patients": 95,
+        "mean": 1.3333363935056015,
+        "ci95": [
+          1.2143989665271238,
+          1.4680833508389677
+        ]
+      },
+      "equal_patient_broken_fraction": {
+        "n_patients": 95,
+        "mean": 0.01091367765052804,
+        "ci95": [
+          0.008840500790403398,
+          0.013043881088938619
+        ]
+      }
+    },
+    "always_nonconsecutive": {
+      "structural_edge_count": 790,
+      "structural_edge_fraction": 0.005383818558499618,
+      "edge_observations_across_seeds": 3950,
+      "pooled_pred_gt_length_ratio": 64.19324977083537,
+      "pooled_broken_edge_fraction_5x": 0.8739240506329113,
+      "signed_excess_mm_per_edge_observation": 25.887601216553648,
+      "positive_excess_mm_per_edge_observation": 25.887833473281717,
+      "fraction_of_total_signed_excess": 0.11040454603163584,
+      "fraction_of_total_positive_excess": 0.10413535035884249,
+      "equal_patient_length_ratio": {
+        "n_patients": 90,
+        "mean": 61.82248005411065,
+        "ci95": [
+          54.88523114963662,
+          69.46519421106903
+        ]
+      },
+      "equal_patient_broken_fraction": {
+        "n_patients": 90,
+        "mean": 0.87589146233053,
+        "ci95": [
+          0.8483395123012456,
+          0.9014451398791448
+        ]
+      }
+    }
+  },
+  "counterfactual": {
+    "actual_tree_length_ratio": {
+      "n_patients": 96,
+      "mean": 3.595285049057107,
+      "ci95": [
+        3.2901445061987227,
+        3.931948315658278
+      ]
+    },
+    "adjacency_transfer_tree_length_ratio": {
+      "n_patients": 96,
+      "mean": 2.940731454138202,
+      "ci95": [
+        2.749682032507763,
+        3.141252686398986
+      ]
+    },
+    "perfect_rescue_only_tree_length_ratio": {
+      "n_patients": 96,
+      "mean": 1.7652488477467996,
+      "ci95": [
+        1.705030964107087,
+        1.8291368711858687
+      ]
+    },
+    "adjacency_transfer_fraction_of_excess_removed": 0.252208748767967,
+    "perfect_rescue_fraction_of_excess_removed": 0.705138806226768,
+    "warning": "Counterfactual values are CPU-only mechanism screens, not predictions of a retrained model."
+  },
+  "screening_decision": {
+    "rescued_carries_more_per_edge_breakage_and_positive_excess_than_sacrificed": true,
+    "adjacency_transfer_removes_at_least_10pct_of_excess": true,
+    "proceed_to_paired_50k_ordering_pilot": true
+  }
+}

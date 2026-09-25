@@ -1,0 +1,49 @@
+{
+  "schema_version": "optimal_ordering_v1",
+  "source_commit": "008fe9d8e2c228171bfb06e0709387791136a148",
+  "source_dataset": "/Users/atefebahrami/Desktop/GT_Courses/2nd_Semster/CS6999/GitHub/cs6999-coronary-centerline-2/data/processed/ds105_full",
+  "edge_cache": "/Users/atefebahrami/Desktop/GT_Courses/2nd_Semster/CS6999/GitHub/cs6999-coronary-centerline-2/edge_cache/edges_v1.npz",
+  "edge_cache_sha256": "d2a2d1eec9c89fe572337300bcc333a7dc52c1e84aa68984c8d9f03ebee49b56",
+  "n_samples": 1694,
+  "split_counts": {
+    "train": 1350,
+    "val": 177,
+    "test": 167
+  },
+  "current_nonconsecutive_fraction": {
+    "mean": 0.03675200391209678,
+    "median": 0.02655860076178801,
+    "p25": 0.017191700268817223,
+    "p75": 0.04448455903256657,
+    "p90": 0.07634992541848513,
+    "p95": 0.09534814358800174,
+    "minimum": 0.0,
+    "maximum": 0.2727272727272727
+  },
+  "optimal_nonconsecutive_fraction": {
+    "mean": 0.022712845575441603,
+    "median": 0.02051632817706689,
+    "p25": 0.014288718010332768,
+    "p75": 0.02894935383374636,
+    "p90": 0.03777449370552819,
+    "p95": 0.04464652929326841,
+    "minimum": 0.0,
+    "maximum": 0.093964858670741
+  },
+  "recoverable_gap": {
+    "mean": 0.01403915833665518,
+    "median": 0.0057736797541186324,
+    "p25": 0.0022421524663677195,
+    "p75": 0.01567253658466114,
+    "p90": 0.040533550792171504,
+    "p95": 0.05455133062434424,
+    "minimum": 0.0,
+    "maximum": 0.1787624140565317
+  },
+  "within_half_percentage_point_of_floor": {
+    "count": 782,
+    "fraction": 0.46162927981109797
+  },
+  "objective": "maximize the number of evaluator-tree edges whose endpoints are adjacent in one node permutation",
+  "permutation_semantics": "new valid row position -> old packaged valid row index"
+}
