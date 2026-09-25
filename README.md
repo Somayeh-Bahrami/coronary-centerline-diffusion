@@ -70,8 +70,16 @@ same validation protocol.
 2. **Optimal linear ordering:** an exact constructive ordering that minimizes
    the number of graph edges that cannot be adjacent in a one-dimensional
    sequence.
-3. **Branch-token representation:** an edge-balanced traversal containing
-   explicit branch-return tokens.
+3. **Branch-token representation:** the DFS node ordering augmented with four
+   normalized per-node topology channels — branch id, parent branch id, parent
+   attachment index, and within-branch index — giving an eight-channel node
+   record `(x, y, z, radius, branch_id, parent_branch_id,
+   parent_attach_index, within_branch_index)`. The node ordering itself is
+   unchanged; the topology fields are additional generation targets, decoded
+   at inference by a fixed deterministic decoder that never receives
+   ground-truth edges. See
+   [STAGE2_FROZEN_REPRESENTATION.md](STAGE2_FROZEN_REPRESENTATION.md) and
+   `src/coronarycl/branch_token_tree.py`.
 
 Ordering and branch-token experiments were preregistered in
 [experiment_protocol.md](experiment_protocol.md) and
@@ -102,12 +110,28 @@ autonomous topology recovery. Sampling also uses the ground-truth point count.
 
 ## Main finding
 
-Point-set accuracy and vascular connectivity dissociate. Optimal linear
-ordering reduces the broken-edge fraction and tree-length inflation, but it
-does not improve LCC and does not pass the preregistered advancement rule. The
-branch-token representation also fails to recover connected trees. These
-results show that plausible point clouds are not sufficient for a centerline
-intended for graph-dependent hemodynamic analysis.
+Point-set accuracy and vascular connectivity dissociate, and they do so in
+both directions.
+
+Optimal linear ordering reduces the broken-edge fraction and tree-length
+inflation, yet the largest connected-component fraction **falls** rather than
+improves, from 25.8% to 18.6% (paired per-patient change −7.2 pp, 95% CI
+[−8.1, −6.2]). Fewer broken edges therefore did not produce a
+better-connected vessel: the remaining breaks fall closer to the root, so each
+one severs a larger share of the tree. The arm does not pass the preregistered
+advancement rule.
+
+The branch-token representation moves in the opposite direction on geometry —
+Chamfer is not degraded relative to the seed-matched baseline — while
+connectivity collapses, with the broken-edge fraction rising to 38.5%, LCC
+falling to 14.0%, and the tree-length ratio rising to 8.2. This result applies
+to the continuous branch-token encoding specified here, not to topology-aware
+methods in general.
+
+Two interventions with opposite effects on the point metric thus produce the
+same conclusion: plausible point clouds are not sufficient for a centerline
+intended for graph-dependent hemodynamic analysis, and Chamfer distance alone
+cannot establish that a reconstructed tree is usable downstream.
 
 The appropriate next step is a graph-native generator or an explicit,
 validated topology-recovery/reconnection stage before downstream WSS or FFR
@@ -297,6 +321,11 @@ The current audited repository state contains 81 passing tests.
   metadata.
 - SHA-256 hashes for frozen external artifacts are recorded in
   [`manifests/final_artifacts.sha256`](manifests/final_artifacts.sha256).
+- Per-sample validation records and paired per-patient differences for the
+  three 50k arms are committed in
+  [`results/validation_50k_v1/`](results/validation_50k_v1/). Running
+  `python results/validation_50k_v1/verify_table1.py` reproduces the reported
+  main table and re-derives every paired difference from the per-sample files.
 - The final manuscript, checkpoint release, and permanent artifact links will
   be added after the submission package is frozen.
 - The test split remains untouched at the current project stage.
