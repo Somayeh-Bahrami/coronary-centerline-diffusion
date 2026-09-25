@@ -1,117 +1,300 @@
-# Diffusion-Based 3D Coronary Centerline Reconstruction from Sparse-View X-Ray Angiography
+# Counting Is Not Connecting
 
-Reconstructing the 3D coronary artery centerline from 2 sparse,
-non-simultaneous 2D X-ray angiography projections via a conditional
-diffusion model, Phase 1 of a two-phase project toward real-time,
-wire-free intraoperative hemodynamic assessment (FFR, WSS, blood
-velocity).
+## Topology-aware evaluation of two-view coronary centerline diffusion
 
-CS 6999, Georgia Tech. Advisor: Prof. Bo Zhu.
+This repository contains the data-generation, conditional-diffusion, and
+topology-aware evaluation code for reconstructing 3D coronary centerlines
+from two synthetic X-ray angiographic projections.
 
-## Proposal
+The project began as a reconstruction stage for downstream coronary
+hemodynamics. During validation, we found that good point-set accuracy does
+not necessarily produce a connected vascular tree. The completed study
+therefore focuses on this mismatch: it measures geometric accuracy and graph
+connectivity separately and tests two controlled representation changes.
 
-See [proposal.pdf](Proposal.pdf) for the full project proposal
-Step-by-step task tracking lives in [docs/work_breakdown.md](docs/work_breakdown.md).
+The manuscript is currently being finalized and has **not yet been submitted
+or accepted**. All reported model comparisons are validation-set analyses;
+the held-out test set has not been accessed.
 
-## Setup
+## Study overview
 
-```bash
-pip install -r requirements.txt
+### Data
+
+The source data are the expert coronary-artery segmentation masks from
+[ImageCAS](https://github.com/XiaoweiXu/ImageCAS-A-Large-Scale-Dataset-and-Benchmark-for-Coronary-Artery-Segmentation-based-on-CT).
+`build_dataset_v3.py` converts the masks into paired reconstruction samples:
+
+- separate LCA and RCA coronary systems;
+- a 105 mm crop and isotropic resampling;
+- 3D centerline coordinates and physical radius in millimetres;
+- two 512 x 512 binary vessel projections rendered with TIGRE;
+- nominal projection matrices supplied to the model and motion-aware matrices
+  retained only for validation;
+- patient-level train/validation/test assignments; and
+- strict geometry, projection, coverage, connectivity, padding, and radius
+  quality-control gates.
+
+The final packaged dataset contains 1,694 vessel samples:
+
+| Split | Vessel samples |
+|---|---:|
+| Train | 1,350 |
+| Validation | 177 |
+| Test | 167 |
+
+The patient assignment is 800/100/100. Both coronary systems from one patient
+remain in the same split. Normalization statistics are calculated from the
+training split only.
+
+See [DATASET.md](DATASET.md) for the complete data description and access
+requirements. ImageCAS data are not redistributed by this repository.
+
+### Model
+
+The model is a conditional diffusion model over ordered centerline nodes
+`(x, y, z, radius)`. Its denoiser is a padding-aware 1D convolutional
+encoder-decoder with bottleneck self-attention and **no U-Net skip
+connections**. Two vessel projections and their nominal projection matrices
+are encoded as conditioning tokens and incorporated through positional-query
+cross-attention. The final experiments use epsilon prediction, self-
+conditioning, classifier-free conditioning dropout, and a hidden dimension of
+384.
+
+### Experimental arms
+
+All principal comparisons use the same 50,000-step training budget and the
+same validation protocol.
+
+1. **DFS ordering:** the original depth-first linearization of the coronary
+   tree.
+2. **Optimal linear ordering:** an exact constructive ordering that minimizes
+   the number of graph edges that cannot be adjacent in a one-dimensional
+   sequence.
+3. **Branch-token representation:** an edge-balanced traversal containing
+   explicit branch-return tokens.
+
+Ordering and branch-token experiments were preregistered in
+[experiment_protocol.md](experiment_protocol.md) and
+[STAGE2_FROZEN_REPRESENTATION.md](STAGE2_FROZEN_REPRESENTATION.md).
+
+### Evaluation
+
+Sampler and protocol choices are frozen on validation data. Evaluation uses
+100-step DDIM sampling, guidance 2.0, and five fixed sampling seeds.
+
+Point-set metrics:
+
+- summed, unsquared symmetric Chamfer-L2 in millimetres;
+- HD95;
+- overlap within 1, 2, and 5 mm; and
+- radius error and correlation.
+
+Topology-aware metrics, computed using the supplied ground-truth graph:
+
+- fraction of broken edges at a multiple of ground-truth edge length;
+- largest connected-component fraction (LCC);
+- reconstructed-to-ground-truth tree-length ratio;
+- severed mass; and
+- crop violations.
+
+The topology is supplied for analysis; this repository does not claim
+autonomous topology recovery. Sampling also uses the ground-truth point count.
+
+## Main finding
+
+Point-set accuracy and vascular connectivity dissociate. Optimal linear
+ordering reduces the broken-edge fraction and tree-length inflation, but it
+does not improve LCC and does not pass the preregistered advancement rule. The
+branch-token representation also fails to recover connected trees. These
+results show that plausible point clouds are not sufficient for a centerline
+intended for graph-dependent hemodynamic analysis.
+
+The appropriate next step is a graph-native generator or an explicit,
+validated topology-recovery/reconnection stage before downstream WSS or FFR
+estimation. This repository does **not** claim that its current predictions
+are ready for clinical hemodynamic use.
+
+## Repository layout
+
+```text
+build_dataset_v3.py                 Dataset construction and hard QC
+train.py                            Training entry point
+ddim_eval.py                        DDIM and topology-aware validation
+cond_sensitivity.py                 Patient-aware conditioning sensitivity
+visualize_predictions.py            Equal-axis prediction visualization
+
+src/coronarycl/                     Dataset, model, trainer, sampler, metrics
+scripts/build_edge_cache.py         Canonical graph-edge cache builder
+scripts/leaf_bound_check.py         Exact linear-ordering bound and permutation
+scripts/build_optimal_order_dataset.py
+scripts/verify_optimal_order_dataset.py
+scripts/build_branch_token_dataset.py
+
+configs/h384_ordering_50k_dfs.yaml
+configs/h384_ordering_50k_optimal.yaml
+configs/h384_branch_token_stage2.yaml
+tests/                              Unit and integration tests
 ```
 
-Runs on CUDA and CPU; device is auto-detected
-(`src/coronarycl/config.py`). Dataset generation and full-scale training
-require a CUDA GPU — both are run on Kaggle Notebooks (P100). TIGRE has no
-pip package and must be built from source there:
+Generated datasets, edge caches, checkpoints, predictions, and analysis
+outputs should be stored outside Git or in ignored artifact directories.
+
+## Installation
+
+Python 3.10 or newer is recommended.
 
 ```bash
-git clone --depth 1 https://github.com/CERN/TIGRE.git
-pip install ./TIGRE/Python
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-## Dataset
+Dataset rendering additionally requires a CUDA-compatible installation of
+[TIGRE](https://github.com/CERN/TIGRE). TIGRE is not installed by
+`requirements.txt`.
 
-See [DATASET.md](DATASET.md) for an overview of ImageCAS (1000 CCTA
-volumes, expert-annotated segmentation masks). Dataset v3 is built by a
-single script, `build_dataset_v3.py`, which does every step in one
-coordinate frame: RCA/LCA split, 96 mm crop, isotropic resample,
-skeletonization (centerline + radius in mm), binary vessel-mask projection
-through DeepCA's two-view geometry via TIGRE (Biguri et al., 2016), DLT pose
-calibration, and a hard QC gate.
+## Dataset construction
+
+The paper dataset uses a **105 mm** crop. Because the builder currently retains
+a 96 mm legacy default, always pass the crop explicitly:
 
 ```bash
-python build_dataset_v3.py --raw_dir <imagecas_raw> --out_dir ./dataset_v3_1 --n 20
+python build_dataset_v3.py \
+  --raw_dir /path/to/imagecas \
+  --out_dir data/processed/ds105_full \
+  --n 1000 \
+  --crop_mm 105 \
+  --iso auto \
+  --seed 0
 ```
 
-It writes one `.npz` per coronary system (`<patient>_LCA.npz` /
-`<patient>_RCA.npz`), a patient-level 80/10/10 split (both vessels of a
-patient stay in the same split), and train-only normalization stats. Read it
-with `src/coronarycl/dataset_v3_1.py`. Run the 20-patient pilot and check the
-gate before building all 1000. `data/` is gitignored.
-
-**Poses:** `poses` is the NOMINAL scanner geometry with the simulated motion
-removed, following DeepCA's protocol — so projecting the ground-truth
-centerline through `poses[1]` does *not* land on `images[1]`. That mismatch is
-the motion-compensation task. `poses_render` carries the motion and is for
-validation and visualization only.
-
-## Model
-
-A conditional diffusion model (1D-UNet denoiser over centerline
-nodes), following AortaDiff's (arXiv:2507.13404) centerline-diffusion
-design, conditioned on both projections and their projection matrices
-via cross-attention. A classical, non-learned epipolar-constraint
-baseline (`src/coronarycl/models/baseline.py`) is implemented
-alongside it to establish a reconstruction-quality floor.
+Do not train unless the final hard gate passes. Build the canonical edge cache
+outside the dataset directory:
 
 ```bash
-python train.py --config configs/h384_200k.yaml         # clean 200k run — CUDA/BF16
-python train.py --config configs/default.yaml --quick-test   # local M4 sanity check
+python scripts/build_edge_cache.py \
+  --data data/processed/ds105_full \
+  --out artifacts/dfs_edge_cache
 ```
 
-Initial hyperparameters follow AortaDiff's reported setup (Adam,
-β₁=0.9/β₂=0.99, LR 1×10⁻³, T=1000); batch size and training length are
-tuned empirically for this dataset's scale rather than copied
-directly (AortaDiff trained on 18 cases with 3D-volume conditioning,
-versus ~800 training patients with 2D-projection conditioning here).
+## Representation datasets
 
-## Evaluation
-
-Sampler/checkpoint settings are selected on VAL only. Evaluation reports the
-project's summed, unsquared Chamfer-L2 convention, HD95, Ot(1/2/5 mm),
-given-topology continuity and tree length, and crop violations. The canonical
-DDIM sampler is padding-aware and uses physical per-channel bounds. TEST stays
-locked until the complete protocol is frozen.
+### Exact optimal ordering
 
 ```bash
-python ddim_eval.py --ckpt outputs/h384_200k/checkpoints/best.pt \
-  --data data/processed/ds105_full --split val --steps 50 --guidance 1.0 \
-  --out outputs/h384_200k/val_s50_g1.json --save-pred outputs/h384_200k/val_s50_g1.npz
-python cond_sensitivity.py --data data/processed/ds105_full \
-  --ckpt h384=outputs/h384_200k/checkpoints/best.pt \
-  --out-dir outputs/h384_200k/sensitivity_joint --shuffle-mode joint
+python scripts/leaf_bound_check.py \
+  --data data/processed/ds105_full \
+  --edge-cache artifacts/dfs_edge_cache \
+  --out artifacts/ordering_analysis_v1
+
+python scripts/build_optimal_order_dataset.py \
+  --source data/processed/ds105_full \
+  --permutations artifacts/ordering_analysis_v1/optimal_ordering_v1.npz \
+  --source-edge-cache artifacts/dfs_edge_cache \
+  --out data/processed/ds105_optimal_v1 \
+  --edge-out artifacts/optimal_edge_cache
+
+python scripts/verify_optimal_order_dataset.py --help
 ```
 
-## Fine-tuning
+Run the verification command with the corresponding source, derived-dataset,
+permutation, and edge-cache paths before training.
 
-If real (non-simultaneous) ICA projections become available, fine-tune
-the trained checkpoint on them to close the DRR-to-real sim-to-real
-gap:
+### Branch-token representation
 
 ```bash
-python finetune.py --checkpoint outputs/model.pt --real-data-dir data/real_ica/
+python scripts/build_branch_token_dataset.py \
+  --source data/processed/ds105_full \
+  --source-edge-cache artifacts/dfs_edge_cache \
+  --out data/processed/ds105_branch_token_v1 \
+  --edge-out artifacts/branch_token_edge_cache
+```
+
+## Training
+
+Run a quick test first, using a separate checkpoint directory if a production
+run already exists:
+
+```bash
+python train.py --config configs/h384_ordering_50k_dfs.yaml --quick-test
+```
+
+The three frozen 50k arms are launched with:
+
+```bash
+python train.py --config configs/h384_ordering_50k_dfs.yaml
+python train.py --config configs/h384_ordering_50k_optimal.yaml
+python train.py --config configs/h384_branch_token_stage2.yaml
+```
+
+Before running, update only environment-specific dataset, checkpoint, and edge-
+cache paths. Do not change the frozen scientific hyperparameters when
+reproducing the comparison.
+
+## Validation evaluation
+
+Example for the DFS arm:
+
+```bash
+python ddim_eval.py \
+  --ckpt /path/to/dfs_checkpoint.pt \
+  --data data/processed/ds105_full \
+  --edge-cache artifacts/dfs_edge_cache \
+  --split val \
+  --steps 100 \
+  --guidance 2.0 \
+  --seeds 104729,130363,155921,181081,205019 \
+  --bounds physical \
+  --precision fp32 \
+  --out artifacts/dfs_val.json \
+  --save-pred artifacts/dfs_val_predictions.npz
+```
+
+`ddim_eval.py` refuses test-set evaluation unless `--allow-test` is explicitly
+provided. Do not use that option while developing, selecting checkpoints, or
+tuning the protocol.
+
+Conditioning sensitivity can be measured in joint image-and-pose mode and in
+image-only mode:
+
+```bash
+python cond_sensitivity.py \
+  --data data/processed/ds105_full \
+  --ckpt dfs=/path/to/dfs_checkpoint.pt \
+  --out-dir artifacts/sensitivity_joint \
+  --seeds 104729,130363,155921,181081,205019 \
+  --shuffle-mode joint \
+  --precision fp32
+
+python cond_sensitivity.py \
+  --data data/processed/ds105_full \
+  --ckpt dfs=/path/to/dfs_checkpoint.pt \
+  --out-dir artifacts/sensitivity_images \
+  --seeds 104729,130363,155921,181081,205019 \
+  --shuffle-mode images \
+  --precision fp32
 ```
 
 ## Tests
 
 ```bash
-python -m pytest tests/
+python -m pytest -q
 ```
 
-## References
+The current audited repository state contains 83 passing tests.
 
-See [references.bib](references.bib).
+## Reproducibility and release status
 
-## Author
+- Patient-level splitting prevents cross-patient leakage.
+- Normalization statistics are training-only.
+- Checkpoints record the prediction parameterization and run signature.
+- Evaluation records dataset, edge-cache, checkpoint, sampler, and seed
+  metadata.
+- The final manuscript, checkpoint release, and permanent artifact links will
+  be added after the submission package is frozen.
+- The test split remains untouched at the current project stage.
 
-Somayeh Bahrami — advised by Prof. Bo Zhu, Georgia Tech.
+## Authors
+
+Somayeh Bahrami, advised by Prof. Bo Zhu, Georgia Institute of Technology.
