@@ -64,17 +64,26 @@ hidden dimension 384, batch 16, 50,000 steps, learning rate 3e-4, BF16,
 epsilon prediction, conditioning dropout 0.10, self-conditioning 0.50,
 100-step DDIM sampling, guidance 2.0.
 
-## Scope limit
+## Scope limit — read before citing these files
 
-`dfs_val.csv` is the **single seed-matched baseline run** — the arm trained
-with `training.seed: 20260911`, the same initialization used by the
-optimal-ordering arm. It is the correct baseline for the paired comparisons in
-the delta files.
+`dfs_val.csv` is **one DFS training run**: the arm trained with
+`training.seed: 20260911`, the same initialization used by the
+optimal-ordering and branch-token arms. It is the correct comparator for the
+two delta files here, which are seed-matched paired comparisons.
 
-It is *not* the three-seed replicate mean. The seed-replicate evidence is
-archived separately as
-`packages/dfs_seed_replicates_reproducibility.zip` in the artifact manifest
-and is not reproduced by the files in this directory.
+It is **not** the baseline reported in the manuscript's main table. That table
+gives the DFS column as a mean ± SD over *three* training seeds
+(Chamfer 21.32 ± 1.41, broken edges 4.47 ± 0.11, LCC 25.70 ± 0.53,
+tree-length ratio 3.26 ± 0.11), and reports each intervention's effect as the
+*range* of paired differences across all three seeds together with the number
+of seeds whose 95% CI excludes zero. The run archived here is one of those
+three; its per-patient mean Chamfer is 20.816, within the reported spread.
+
+The other two replicates are archived only as
+`packages/dfs_seed_replicates_reproducibility.zip` in
+[`manifests/final_artifacts.sha256`](../../manifests/final_artifacts.sha256).
+Consequently the files in this directory reproduce the seed-matched slice of
+the reported results, **not** the full three-seed table or the delta ranges.
 
 ## Reproducing the reported table
 
@@ -83,7 +92,7 @@ python results/validation_50k_v1/verify_table1.py
 ```
 
 This recomputes per-patient means from the per-sample files and prints the
-main-table values. Expected output:
+single-seed values. Expected output:
 
 ```
 arm         chamfer   broken%      LCC%  tree-len
@@ -92,9 +101,12 @@ optimal      21.903     3.785     18.60     2.556
 branch       19.791    38.470     14.01     8.211
 ```
 
-It also re-derives every paired per-patient difference from the per-sample
-files and checks it against the archived delta files. All eight comparisons in
-the main table reproduce exactly; the script exits non-zero if any does not.
+The DFS row is the single archived run, so it does not equal the manuscript's
+three-seed DFS column; see the scope limit above.
+
+The script also re-derives every paired per-patient difference from the
+per-sample files and checks it against the archived delta files. All eight
+comparisons reproduce exactly; the script exits non-zero if any does not.
 
 To regenerate the per-sample files themselves, run `ddim_eval.py` against the
 corresponding checkpoint and edge cache as documented in the top-level README.
