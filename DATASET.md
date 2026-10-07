@@ -124,8 +124,9 @@ checks every sample, all metadata, graph fingerprints, and source JSON files.
 ### Branch-token representation
 
 `scripts/build_branch_token_dataset.py` produces an edge-balanced traversal
-with explicit branch-return tokens. This is the single preregistered tree-aware
-representation tested after optimal ordering failed its advancement rule.
+with explicit branch-return tokens. This is the single tree-aware
+representation, frozen in STAGE2_FROZEN_REPRESENTATION.md, tested after
+optimal ordering failed its advancement rule.
 
 These variants represent the same anatomy; they are not additional patients
 or independent datasets.

@@ -12,9 +12,9 @@ not necessarily produce a connected vascular tree. The completed study
 therefore focuses on this mismatch: it measures geometric accuracy and graph
 connectivity separately and tests two controlled representation changes.
 
-The manuscript is currently being finalized and has **not yet been submitted
-or accepted**. All reported model comparisons are validation-set analyses;
-the held-out test set has not been accessed.
+The accompanying manuscript is an arXiv preprint (link to be added after
+posting) and has **not been peer reviewed**. All reported model comparisons
+are validation-set analyses; the held-out test set has not been accessed.
 
 ## Study overview
 
@@ -71,8 +71,8 @@ same validation protocol.
    the number of graph edges that cannot be adjacent in a one-dimensional
    sequence.
 3. **Branch-token representation:** the DFS node ordering augmented with four
-   normalized per-node topology channels — branch id, parent branch id, parent
-   attachment index, and within-branch index — giving an eight-channel node
+   normalized per-node topology channels (branch id, parent branch id, parent
+   attachment index, and within-branch index), giving an eight-channel node
    record `(x, y, z, radius, branch_id, parent_branch_id,
    parent_attach_index, within_branch_index)`. The node ordering itself is
    unchanged; the topology fields are additional generation targets, decoded
@@ -81,9 +81,10 @@ same validation protocol.
    [STAGE2_FROZEN_REPRESENTATION.md](STAGE2_FROZEN_REPRESENTATION.md) and
    `src/coronarycl/branch_token_tree.py`.
 
-Ordering and branch-token experiments were preregistered in
+The ordering and branch-token experiment plans were frozen in
 [experiment_protocol.md](experiment_protocol.md) and
-[STAGE2_FROZEN_REPRESENTATION.md](STAGE2_FROZEN_REPRESENTATION.md).
+[STAGE2_FROZEN_REPRESENTATION.md](STAGE2_FROZEN_REPRESENTATION.md)
+(commits of 2026-09-15); see the git history for the exact versions.
 
 ### Evaluation
 
@@ -102,11 +103,17 @@ Topology-aware metrics, computed using the supplied ground-truth graph:
 - fraction of broken edges at a multiple of ground-truth edge length;
 - largest connected-component fraction (LCC);
 - reconstructed-to-ground-truth tree-length ratio;
-- severed mass; and
+- severed mass (see the note below); and
 - crop violations.
 
 The topology is supplied for analysis; this repository does not claim
 autonomous topology recovery. Sampling also uses the ground-truth point count.
+
+**Not yet in this repository.** Severed mass, the broken-edge threshold sweep,
+the oracle nearest-training-tree baseline, the ground-truth perturbation
+experiments, the 1D flow model, and the figure scripts reported in the
+manuscript were produced by separate analysis scripts that are not included
+here. The class-mean template baseline is included (`ddim_eval.py --mean-shape`).
 
 ## Main finding
 
@@ -115,26 +122,36 @@ both directions.
 
 Optimal linear ordering reduces the broken-edge fraction and tree-length
 inflation, yet the largest connected-component fraction **falls** rather than
-improves, from 25.7% to 18.6% — a paired per-patient change of −6.5 to
+improves, from 25.7% to 18.6%: a paired per-patient change of −6.5 to
 −7.6 pp measured against each of three DFS training seeds, with all three
 confidence intervals excluding zero. Fewer broken edges therefore did not
-produce a better-connected vessel: the remaining breaks fall closer to the
-root, so each one severs a larger share of the tree (0.156 versus 0.105, about
-50% more). The arm does not pass the preregistered advancement rule.
+produce a better-connected vessel: the remaining breaks fall on more central
+edges, so each one severs a larger share of the tree (0.156 versus 0.105 for
+the seed-matched DFS run, about 50% more). The arm does not meet the
+advancement rule in [experiment_protocol.md](experiment_protocol.md).
 
-The branch-token representation moves in the opposite direction on geometry.
-Chamfer changed by −0.4 to −3.1 mm against the three DFS seeds, inside the
-seed-to-seed range, while connectivity collapsed: the broken-edge fraction rose
-to 38.5%, LCC fell to 14.0%, and the tree-length ratio rose from 3.26 to 8.21.
+The branch-token representation leaves geometry no worse while connectivity
+collapses. Its Chamfer distance (19.8 mm) is lower than every DFS seed
+(21.3 ± 1.4 mm), by 0.4 to 3.1 mm, with paired confidence intervals excluding
+zero against two of the three seeds. Meanwhile the broken-edge fraction rose to
+38.5%, LCC fell to 14.0%, and the tree-length ratio rose from 3.26 to 8.21.
 This result applies to the continuous branch-token encoding specified here, not
 to topology-aware methods in general.
 
 Both LCC effects exceed the DFS training-seed spread by more than tenfold,
-whereas the sign of the Chamfer difference depends on which seed is used as the
-comparator. Two interventions with opposite effects on the point metric thus
-support the same conclusion: plausible point clouds are not sufficient for a
-centerline intended for graph-dependent hemodynamic analysis, and Chamfer
-distance alone cannot establish that a reconstructed tree is usable downstream.
+whereas the sign of the optimal-ordering Chamfer difference depends on which
+DFS seed is used as the comparator. The two interventions thus move the point
+metric differently yet support the same conclusion: plausible point clouds are
+not sufficient for a centerline intended for graph-dependent hemodynamic
+analysis, and Chamfer distance alone cannot establish that a reconstructed tree
+is usable downstream.
+
+Where breaks occur: in a screening analysis on a separate, longer-trained DFS
+checkpoint (150k steps, same training seed), edges that are non-consecutive in
+the DFS sequence (about 4% of edges) broke 83–88% of the time, versus 1.1–1.5%
+for consecutive edges, and accounted for about 72% of pooled broken-edge
+observations. See
+[`results/ordering_stage1_5_v1/`](results/ordering_stage1_5_v1/).
 
 The appropriate next step is a graph-native generator or an explicit,
 validated topology-recovery/reconnection stage before downstream WSS or FFR
@@ -331,15 +348,16 @@ The current audited repository state contains 81 passing tests.
   difference from the per-sample files. The DFS records there are one training
   seed; the remaining two seed replicates behind the reported mean ± SD are
   archived outside Git and listed in the artifact manifest.
-- The final manuscript, checkpoint release, and permanent artifact links will
-  be added after the submission package is frozen.
+- The arXiv link will be added after posting. Checkpoints and packaged
+  datasets are distributed outside Git and verified against the artifact
+  manifest.
 - The test split remains untouched at the current project stage.
 
 ## License and citation
 
 The source code is released under the [MIT License](LICENSE). Citation
 metadata are provided in [CITATION.cff](CITATION.cff). The manuscript citation
-will be added after submission.
+will be added once the arXiv identifier is assigned.
 
 ## Authors
 

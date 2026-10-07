@@ -1,4 +1,4 @@
-# Validation results — 50k paired comparison (v1)
+# Validation results: 50k paired comparison (v1)
 
 Per-sample validation records and paired per-patient differences for the three
 50,000-step arms reported in the manuscript. These are the archived evaluation
@@ -30,15 +30,15 @@ aggregated, so each arm is compared against the baseline on the same patients.
 
 ## Column notes
 
-- `chamfer_l2` — symmetric Chamfer-L2 in millimetres, **summed over the two
+- `chamfer_l2`: symmetric Chamfer-L2 in millimetres, **summed over the two
   directions and unsquared**. This is roughly twice the value of the more
   common averaged convention; compare against other work with care.
 - `broken_edge_fraction_5x`, `edge_continuity_5x`,
-  `largest_connected_component_fraction_5x` — computed at a discontinuity
+  `largest_connected_component_fraction_5x`: computed at a discontinuity
   threshold of five times the ground-truth edge length
   (`curve_metrics(..., discontinuity_factor=5.0)` in
   `src/coronarycl/metrics.py`).
-- `tree_length_ratio` — predicted over ground-truth tree length; 1.0 is ideal.
+- `tree_length_ratio`: predicted over ground-truth tree length; 1.0 is ideal.
 - Topology metrics use the **supplied ground-truth graph**. They measure
   whether predicted node positions keep connected pairs close, not whether the
   model recovers topology autonomously. The branch-token decoder is the only
@@ -64,7 +64,7 @@ hidden dimension 384, batch 16, 50,000 steps, learning rate 3e-4, BF16,
 epsilon prediction, conditioning dropout 0.10, self-conditioning 0.50,
 100-step DDIM sampling, guidance 2.0.
 
-## Scope limit — read before citing these files
+## Scope limit: read before citing these files
 
 `dfs_val.csv` is **one DFS training run**: the arm trained with
 `training.seed: 20260911`, the same initialization used by the
