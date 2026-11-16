@@ -347,8 +347,7 @@ The current audited repository state contains 81 passing tests.
   difference from the per-sample files. The DFS records there are one training
   seed; the remaining two seed replicates behind the reported mean ± SD are
   archived outside Git and listed in the artifact manifest.
-- The arXiv link will be added after posting. Checkpoints and packaged
-  datasets are distributed outside Git and verified against the artifact
+-  Checkpoints and packaged atasets are distributed outside Git and verified against the artifact
   manifest.
 - The test split remains untouched at the current project stage.
 
