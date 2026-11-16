@@ -356,8 +356,7 @@ The current audited repository state contains 81 passing tests.
 ## License and citation
 
 The source code is released under the [MIT License](LICENSE). Citation
-metadata are provided in [CITATION.cff](CITATION.cff). The manuscript citation
-will be added once the arXiv identifier is assigned.
+metadata are provided in [CITATION.cff](CITATION.cff). 
 
 ## Authors
 
