@@ -12,8 +12,7 @@ not necessarily produce a connected vascular tree. The completed study
 therefore focuses on this mismatch: it measures geometric accuracy and graph
 connectivity separately and tests two controlled representation changes.
 
-The accompanying manuscript is an arXiv preprint (link to be added after
-posting) and has **not been peer reviewed**. All reported model comparisons
+The accompanying manuscript has **not been peer reviewed**. All reported model comparisons
 are validation-set analyses; the held-out test set has not been accessed.
 
 ## Study overview
